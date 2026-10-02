@@ -35,14 +35,10 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
-def configure_logging(level: str, log_format: str) -> None:
+def configure_logging(level: str) -> None:
+    """Install a single stdout JSON handler on the root logger."""
     handler = logging.StreamHandler(sys.stdout)
-    if log_format == "json":
-        handler.setFormatter(JsonFormatter())
-    else:
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)-8s %(name)s | %(message)s")
-        )
+    handler.setFormatter(JsonFormatter())
 
     root = logging.getLogger()
     root.handlers.clear()

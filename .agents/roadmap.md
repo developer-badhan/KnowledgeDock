@@ -61,7 +61,7 @@ Scope: project structure, configuration, FastAPI app, MongoDB connection, health
 endpoint, Docker. See `README.md` §18 Phase 1 and `SKILL.md` §27 items 1–5.
 
 - [x] `src/knowledgedock/` layout: `api/`, `core/`, `domain/`, `application/`, `infrastructure/`, `workers/`, `templates/`, `static/`
-- [x] Typed settings module loading env vars via pydantic-settings (no hard-coded secrets)
+- [x] Typed settings module loading env vars via `python-decouple` (no hard-coded secrets)
 - [x] FastAPI application factory + lifespan handler
 - [x] Jinja2 `StaticFiles` + `Jinja2Templates` wired (Bootstrap + HTMX via CDN)
 - [x] MongoDB async client + connection lifecycle (ping on startup) against Atlas
@@ -288,8 +288,11 @@ Roadmap updated
 | 1 | 01 | Use PyMongo's native `AsyncMongoClient`, not the deprecated `motor` | `motor` is EOL; PyMongo 4.13+ ships async in the core driver, so one dependency covers both the driver and the types |
 | 2 | 01 | `pymongo`, not `motor` — async driver is first-party | avoids a dependency that upstream has stopped maintaining |
 | 3 | 01 | Mongo startup failure does **not** raise | On Render the process must bind `$PORT` even when Atlas is unreachable, otherwise Render restart-loops. `/health` stays 200, `/health/ready` returns 503 and reports the truth |
-| 4 | 01 | `pydantic-settings` with `enable_decoding=False` | `ALLOWED_CONTENT_TYPES` is comma-separated, not JSON. Without this the source layer tries `json.loads()` and raises before field validators run |
-| 5 | 01 | Standard-library JSON logging, no structlog | One dep already exists for this; a 15-line formatter avoids adding one just for JSON output |
-| 6 | 01 | `create_app(settings, *, mongo_manager=None)` seam | Lets tests exercise the real HTTP stack including lifespan without a live Atlas, instead of monkeypatching internals |
-| 7 | 01 | Project is not pip-installed in the Docker image; `PYTHONPATH=/app/src` | Keeps `uv sync` from rebuilding the project on every code change, which is what makes the layer cache work |
-| 8 | 01 | Atlas M0 allows only 3 vector/search indexes | Phase 5 will declare `workspace_id` as a `filter` field inside the single vector index instead of relying on extra indexes |
+| 4 | 01 | `python-decouple` instead of `pydantic-settings` | Decouple is dotenv-native: it resolves `.env` locally and the process environment on Render through one code path. Every variable is declared by name in `load_settings()`, so the configuration surface is one auditable list. `pydantic` stays as FastAPI's own schema dependency. |
+| 5 | 01 | Decouple's `cast` runs *after* the emptiness check in `_require` | `Config.get` applies `cast` to whatever it returns, so `cast=str` on a missing variable yields the literal `"None"` instead of raising. Reading the raw value first is what makes "variable not set" a legible error. |
+| 6 | 01 | Standard-library JSON logging, no structlog; `LOG_FORMAT` removed from config | Render's log viewer wants JSON and nothing else consumes logs. A 15-line formatter avoids adding a dependency just for JSON output, so the format is not a configurable knob |
+| 7 | 01 | `create_app(settings, *, mongo_manager=None)` seam | Lets tests exercise the real HTTP stack including lifespan without a live Atlas, instead of monkeypatching internals |
+| 8 | 01 | Project is not pip-installed in the Docker image; `PYTHONPATH=/app/src` | Keeps `uv sync` from rebuilding the project on every code change, which is what makes the layer cache work |
+| 9 | 01 | Atlas M0 allows only 3 vector/search indexes | Phase 5 will declare `workspace_id` as a `filter` field inside the single vector index instead of relying on extra indexes |
+| 10 | 01 | No Bootstrap JavaScript bundle; no `BOOTSTRAP_ADMIN_*` variables | Only the Bootstrap stylesheet is loaded from CDN. No Bootstrap JS component is in use, so the Popper-carrying bundle is dead weight. There is no bootstrap admin user: Phase 2 registration creates the first account. |
+| 11 | 01 | `.env.sample` trimmed to 36 variables, every one read by name in `load_settings()` | Only values the business rules in README §14/§15 actually consume. Removed tuning knobs with no functional role: `ARGON2_*`, `MONGODB_MAX_POOL_SIZE`, `MONGODB_CONNECT_TIMEOUT_MS`, `MONGODB_SOCKET_TIMEOUT_MS`, `RATE_LIMIT_ENABLED`, `LOG_FORMAT`, `LOG_FILE`, `CORS_ORIGINS`, `PUBLIC_BASE_URL`, `FRONTEND_*`, all `*_CONTAINER_PORT`. |

@@ -29,10 +29,7 @@ class MongoManager:
     async def connect(self) -> None:
         self._client = AsyncMongoClient(
             self._settings.mongodb_uri,
-            maxPoolSize=self._settings.mongodb_max_pool_size,
             serverSelectionTimeoutMS=self._settings.mongodb_server_selection_timeout_ms,
-            connectTimeoutMS=self._settings.mongodb_connect_timeout_ms,
-            socketTimeoutMS=self._settings.mongodb_socket_timeout_ms,
             appname="knowledgedock",
         )
         if await self.ping():

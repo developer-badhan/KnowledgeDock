@@ -1,140 +1,141 @@
-"""Application settings.
+"""Typed application configuration loaded with `python-decouple`.
 
-Fail fast: a missing or malformed value raises at import time of `get_settings`
-rather than surfacing as a confusing error deep inside a request.
+Every value the application needs is declared explicitly in `load_settings()`.
+Nothing else in the codebase reads the environment, so the full configuration
+surface is one readable list and one obvious place to audit for secrets.
+
+Resolution order for each variable (`decouple.Config` semantics):
+
+    1. real process environment  ->  production on Render
+    2. the nearest `.env` file   ->  local development
+
+A variable that is in neither place raises `MissingConfigurationError` naming the
+variable, instead of silently becoming `None` deep inside a request.
 """
 
 from __future__ import annotations
 
-from functools import lru_cache
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from decouple import AutoConfig, Choices, Csv
 
 PACKAGE_DIR = Path(__file__).resolve().parent.parent
 
+AI_PROVIDERS = ("gemini", "null")
+EMBEDDING_TASKS = (
+    "RETRIEVAL_DOCUMENT",
+    "RETRIEVAL_QUERY",
+    "SEMANTIC_SIMILARITY",
+    "CLASSIFICATION",
+    "CLUSTERING",
+    "QUESTION_ANSWERING",
+    "FACT_VERIFICATION",
+    "CODE_RETRIEVAL_QUERY",
+)
+VECTOR_SIMILARITIES = ("cosine", "dotProduct", "euclidean")
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False,
-        # Render injects its own variables (RENDER, RENDER_INSTANCE_ID, ...).
-        extra="ignore",
-        # Comma-separated values (e.g. ALLOWED_CONTENT_TYPES) are not JSON, so
-        # the source layer must hand the raw string to the field validators
-        # instead of trying to json.loads() it and failing.
-        enable_decoding=False,
-    )
+# `gemini-embedding-001` accepts 128-3072 dimensions; 2048 input tokens max.
+GEMINI_MIN_DIMENSIONS = 128
+GEMINI_MAX_DIMENSIONS = 3072
+GEMINI_MAX_INPUT_TOKENS = 2048
 
+
+class MissingConfigurationError(RuntimeError):
+    """A required environment variable was not supplied."""
+
+
+@dataclass(frozen=True, slots=True)
+class Settings:
     # -- Runtime -----------------------------------------------------------
-    environment: str = "production"
-    port: int = Field(default=8000, ge=1, le=65535)
+    environment: str
+    port: int
 
     # -- Security ----------------------------------------------------------
-    secret_key: str = Field(min_length=32)
-    jwt_expire_minutes: int = Field(default=60, ge=1)
-    password_min_length: int = Field(default=8, ge=8)
-    argon2_memory_cost: int = Field(default=19456, ge=1024)
-    bootstrap_admin_email: str | None = None
-    bootstrap_admin_password: str | None = None
-
-    @field_validator("bootstrap_admin_email", mode="before")
-    @classmethod
-    def _blank_to_none(cls, value: object) -> object:
-        return None if value == "" else value
+    secret_key: str
+    jwt_expire_minutes: int
+    password_min_length: int
 
     # -- Database ----------------------------------------------------------
     mongodb_uri: str
-    mongodb_db: str = "knowledgedock"
-    mongodb_max_pool_size: int = Field(default=20, ge=1)
-    mongodb_server_selection_timeout_ms: int = Field(default=8000, ge=100)
-    mongodb_connect_timeout_ms: int = Field(default=8000, ge=100)
-    mongodb_socket_timeout_ms: int = Field(default=30000, ge=100)
+    mongodb_db: str
+    mongodb_server_selection_timeout_ms: int
 
     # -- AI provider -------------------------------------------------------
-    ai_provider: str = "gemini"
-    gemini_api_key: str = ""
-    gemini_chat_model: str = "gemini-2.5-flash"
-    gemini_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    gemini_max_output_tokens: int = Field(default=800, ge=1)
-    gemini_embedding_model: str = "gemini-embedding-001"
-    gemini_embedding_dimensions: int = Field(default=768, ge=128, le=3072)
-    gemini_embedding_task_document: str = "RETRIEVAL_DOCUMENT"
-    gemini_embedding_task_query: str = "RETRIEVAL_QUERY"
-    gemini_embedding_max_input_tokens: int = Field(default=1800, ge=1, le=2048)
-    ai_timeout_seconds: float = Field(default=30.0, gt=0)
-    ai_max_retries: int = Field(default=3, ge=0, le=10)
-
-    @field_validator("ai_provider")
-    @classmethod
-    def _known_provider(cls, value: str) -> str:
-        allowed = {"gemini", "null"}
-        if value not in allowed:
-            raise ValueError(f"AI_PROVIDER must be one of {sorted(allowed)}, got {value!r}")
-        return value
+    ai_provider: str
+    gemini_api_key: str
+    gemini_chat_model: str
+    gemini_temperature: float
+    gemini_max_output_tokens: int
+    gemini_embedding_model: str
+    gemini_embedding_dimensions: int
+    gemini_embedding_task_document: str
+    gemini_embedding_task_query: str
+    gemini_embedding_max_input_tokens: int
+    ai_timeout_seconds: float
+    ai_max_retries: int
 
     # -- Uploads -----------------------------------------------------------
-    storage_dir: Path = Path("/tmp/knowledgedock/uploads")
-    max_upload_size_mb: int = Field(default=10, ge=1)
-    allowed_content_types: tuple[str, ...] = (
-        "text/plain",
-        "text/markdown",
-        "text/html",
-        "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
-
-    @field_validator("allowed_content_types", mode="before")
-    @classmethod
-    def _split_content_types(cls, value: object) -> object:
-        if isinstance(value, str):
-            return tuple(part.strip() for part in value.split(",") if part.strip())
-        return value
+    storage_dir: Path
+    max_upload_size_mb: int
+    allowed_content_types: tuple[str, ...]
 
     # -- Chunking ----------------------------------------------------------
-    chunk_size: int = Field(default=1000, ge=100)
-    chunk_overlap: int = Field(default=200, ge=0)
-    min_chunk_size: int = Field(default=100, ge=1)
-
-    @field_validator("chunk_overlap")
-    @classmethod
-    def _overlap_smaller_than_chunk(cls, value: int, info) -> int:
-        chunk_size = info.data.get("chunk_size")
-        if chunk_size is not None and value >= chunk_size:
-            raise ValueError("CHUNK_OVERLAP must be smaller than CHUNK_SIZE")
-        return value
+    chunk_size: int
+    chunk_overlap: int
+    min_chunk_size: int
 
     # -- Retrieval ---------------------------------------------------------
-    vector_index_name: str = "vector_index"
-    vector_similarity: str = "cosine"
-    retrieval_top_k: int = Field(default=5, ge=1, le=100)
-    retrieval_min_score: float = Field(default=0.35, ge=0.0, le=1.0)
-    context_max_chars: int = Field(default=6000, ge=1)
-
-    @field_validator("vector_similarity")
-    @classmethod
-    def _known_metric(cls, value: str) -> str:
-        allowed = {"cosine", "dotProduct", "euclidean"}
-        if value not in allowed:
-            raise ValueError(f"VECTOR_SIMILARITY must be one of {sorted(allowed)}")
-        return value
+    vector_index_name: str
+    vector_similarity: str
+    retrieval_top_k: int
+    retrieval_min_score: float
+    context_max_chars: int
 
     # -- Rate limiting -----------------------------------------------------
-    rate_limit_enabled: bool = True
-    rate_limit_per_minute: int = Field(default=60, ge=1)
-    rate_limit_query_per_minute: int = Field(default=10, ge=1)
+    rate_limit_per_minute: int
+    rate_limit_query_per_minute: int
 
     # -- Background processing ---------------------------------------------
-    processing_max_attempts: int = Field(default=3, ge=1)
-    processing_stale_after_minutes: int = Field(default=30, ge=1)
+    processing_max_attempts: int
+    processing_stale_after_minutes: int
 
     # -- Logging -----------------------------------------------------------
-    log_level: str = "INFO"
-    log_format: str = "json"
+    log_level: str
 
-    # -- Derived paths -----------------------------------------------------
+    def __post_init__(self) -> None:
+        _check_choice("AI_PROVIDER", self.ai_provider, AI_PROVIDERS)
+        _check_choice(
+            "GEMINI_EMBEDDING_TASK_DOCUMENT", self.gemini_embedding_task_document, EMBEDDING_TASKS
+        )
+        _check_choice(
+            "GEMINI_EMBEDDING_TASK_QUERY", self.gemini_embedding_task_query, EMBEDDING_TASKS
+        )
+        _check_choice("VECTOR_SIMILARITY", self.vector_similarity, VECTOR_SIMILARITIES)
+        _check_choice("LOG_LEVEL", self.log_level.upper(), LOG_LEVELS)
+
+        if len(self.secret_key) < 32:
+            raise ValueError("SECRET_KEY must be at least 32 characters")
+        if not self.mongodb_uri.startswith(("mongodb://", "mongodb+srv://")):
+            raise ValueError("MONGODB_URI must start with mongodb:// or mongodb+srv://")
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("CHUNK_OVERLAP must be smaller than CHUNK_SIZE")
+        if not GEMINI_MIN_DIMENSIONS <= self.gemini_embedding_dimensions <= GEMINI_MAX_DIMENSIONS:
+            raise ValueError(
+                f"GEMINI_EMBEDDING_DIMENSIONS must be "
+                f"{GEMINI_MIN_DIMENSIONS}-{GEMINI_MAX_DIMENSIONS}"
+            )
+        if not 1 <= self.gemini_embedding_max_input_tokens <= GEMINI_MAX_INPUT_TOKENS:
+            raise ValueError(
+                f"GEMINI_EMBEDDING_MAX_INPUT_TOKENS must be 1-{GEMINI_MAX_INPUT_TOKENS}"
+            )
+        if not 0.0 <= self.retrieval_min_score <= 1.0:
+            raise ValueError("RETRIEVAL_MIN_SCORE must be between 0.0 and 1.0")
+        if not self.allowed_content_types:
+            raise ValueError("ALLOWED_CONTENT_TYPES must list at least one content type")
+
     @property
     def templates_dir(self) -> Path:
         return PACKAGE_DIR / "templates"
@@ -148,7 +149,110 @@ class Settings(BaseSettings):
         return self.environment.lower() == "production"
 
 
-@lru_cache
+def _check_choice(name: str, value: str, choices: tuple[str, ...]) -> None:
+    """Raise a readable error instead of decouple's generic ValueError."""
+    try:
+        Choices(flat=list(choices), cast=str)(value)
+    except ValueError as exc:
+        raise ValueError(f"{name}: {exc}") from None
+
+
+def _reader(source: Any | None) -> Any:
+    """Return the decouple reader.
+
+    Defaults to `AutoConfig`, which walks up from the working directory looking
+    for a `.env` (or `settings.ini`) and otherwise falls back to the process
+    environment — which is how the Render deployment is configured.
+    """
+    if source is not None:
+        return source
+    return AutoConfig(search_path=Path.cwd())
+
+
+def _require(reader: Any, name: str, cast: Any = str) -> Any:
+    # Read without a cast first: decouple applies `cast` to the value it returns,
+    # so casting before the emptiness check would turn a missing variable into
+    # the string "None" instead of raising.
+    raw = reader(name, default=None)
+    if raw is None or raw == "":
+        raise MissingConfigurationError(
+            f"{name} is not set. Add it to your environment or to a local .env file. "
+            f"See .env.sample for the full list of required variables."
+        )
+    return cast(raw)
+
+
+def load_settings(source: Any | None = None) -> Settings:
+    """Read every application setting from the environment.
+
+    Pass `source` in tests to read from an isolated `.env` file instead of the
+    developer's real one.
+    """
+    reader = _reader(source)
+
+    def required(name: str, cast: Any = str) -> Any:
+        return _require(reader, name, cast)
+
+    def optional(name: str, default: Any, cast: Any = str) -> Any:
+        return reader(name, default=default, cast=cast)
+
+    content_types = reader("ALLOWED_CONTENT_TYPES", default=None, cast=Csv(cast=str))
+
+    return Settings(
+        environment=required("ENVIRONMENT"),
+        # Render injects PORT itself; the fallback only matters for local runs.
+        port=optional("PORT", 8000, int),
+        secret_key=required("SECRET_KEY"),
+        jwt_expire_minutes=optional("JWT_EXPIRE_MINUTES", 60, int),
+        password_min_length=optional("PASSWORD_MIN_LENGTH", 8, int),
+        mongodb_uri=required("MONGODB_URI"),
+        mongodb_db=optional("MONGODB_DB", "knowledgedock"),
+        mongodb_server_selection_timeout_ms=optional(
+            "MONGODB_SERVER_SELECTION_TIMEOUT_MS", 8000, int
+        ),
+        ai_provider=required("AI_PROVIDER"),
+        gemini_api_key=required("GEMINI_API_KEY"),
+        gemini_chat_model=optional("GEMINI_CHAT_MODEL", "gemini-2.5-flash"),
+        gemini_temperature=optional("GEMINI_TEMPERATURE", 0.0, float),
+        gemini_max_output_tokens=optional("GEMINI_MAX_OUTPUT_TOKENS", 800, int),
+        gemini_embedding_model=optional("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001"),
+        gemini_embedding_dimensions=optional("GEMINI_EMBEDDING_DIMENSIONS", 768, int),
+        gemini_embedding_task_document=required("GEMINI_EMBEDDING_TASK_DOCUMENT"),
+        gemini_embedding_task_query=required("GEMINI_EMBEDDING_TASK_QUERY"),
+        gemini_embedding_max_input_tokens=optional("GEMINI_EMBEDDING_MAX_INPUT_TOKENS", 1800, int),
+        ai_timeout_seconds=optional("AI_TIMEOUT_SECONDS", 30, float),
+        ai_max_retries=optional("AI_MAX_RETRIES", 3, int),
+        storage_dir=optional("STORAGE_DIR", "/tmp/knowledgedock/uploads"),
+        max_upload_size_mb=optional("MAX_UPLOAD_SIZE_MB", 10, int),
+        allowed_content_types=tuple(content_types or ()),
+        chunk_size=optional("CHUNK_SIZE", 1000, int),
+        chunk_overlap=optional("CHUNK_OVERLAP", 200, int),
+        min_chunk_size=optional("MIN_CHUNK_SIZE", 100, int),
+        vector_index_name=optional("VECTOR_INDEX_NAME", "vector_index"),
+        vector_similarity=optional("VECTOR_SIMILARITY", "cosine"),
+        retrieval_top_k=optional("RETRIEVAL_TOP_K", 5, int),
+        retrieval_min_score=optional("RETRIEVAL_MIN_SCORE", 0.35, float),
+        context_max_chars=optional("CONTEXT_MAX_CHARS", 6000, int),
+        rate_limit_per_minute=optional("RATE_LIMIT_PER_MINUTE", 60, int),
+        rate_limit_query_per_minute=optional("RATE_LIMIT_QUERY_PER_MINUTE", 10, int),
+        processing_max_attempts=optional("PROCESSING_MAX_ATTEMPTS", 3, int),
+        processing_stale_after_minutes=optional("PROCESSING_STALE_AFTER_MINUTES", 30, int),
+        log_level=optional("LOG_LEVEL", "INFO"),
+    )
+
+
+_settings: Settings | None = None
+
+
 def get_settings() -> Settings:
     """Return the process-wide settings singleton."""
-    return Settings()  # type: ignore[call-arg]
+    global _settings
+    if _settings is None:
+        _settings = load_settings()
+    return _settings
+
+
+def reset_settings() -> None:
+    """Drop the cached singleton. Test-only seam."""
+    global _settings
+    _settings = None

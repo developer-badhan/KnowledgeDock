@@ -31,7 +31,7 @@ def create_app(
     mongo_manager: MongoManager | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
-    configure_logging(settings.log_level, settings.log_format)
+    configure_logging(settings.log_level)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

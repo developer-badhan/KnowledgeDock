@@ -285,28 +285,31 @@ gh repo create knowledgedock --public --source=. --remote=origin --push
 Scroll to **Environment Variables**. Click **Add Environment Variable** once per
 line from your local `.env`.
 
-**Never set these on Render — they are platform-provided or local-only:**
+`SECRET_KEY`, `MONGODB_URI` and `GEMINI_API_KEY` are the only three values you
+must fill in. Everything else in `.env.sample` already carries a working
+default.
+
+**Never set these on Render — they are platform-provided or container-only:**
 
 ```text
-PORT                 Render injects 10000 itself
-ENVIRONMENT          already set to production in the code path; harmless to set
-STORAGE_DIR          must stay /tmp/knowledgedock/uploads inside the container
+PORT          Render injects 10000 itself
+STORAGE_DIR   must stay /tmp/knowledgedock/uploads inside the container
 ```
 
-**Set these, marking the secrets with the `SECRET` toggle:**
+**Fill in these three, marking each as `SECRET`:**
 
 | Key | Value | Mark as Secret |
 |---|---|---|
 | `SECRET_KEY` | output of `openssl rand -base64 48` | yes |
 | `MONGODB_URI` | from A5 | yes |
 | `GEMINI_API_KEY` | from B3 | yes |
-| `BOOTSTRAP_ADMIN_EMAIL` | an email you control | no |
-| `BOOTSTRAP_ADMIN_PASSWORD` | a strong password you control | yes |
 
-Render also accepts **bulk paste**: click **Add from .env** / **Bulk Import**,
-paste the whole contents of your local `.env`, and Render creates every key at
-once. Use this, then go back and mark `SECRET_KEY`, `MONGODB_URI`,
-`GEMINI_API_KEY` and `BOOTSTRAP_ADMIN_PASSWORD` as secret.
+Bulk import is the fast path: copy `.env.sample` to `.env`, fill in the three
+secrets, then in Render choose **Add from .env** and paste the whole file.
+Render creates all 36 keys in one go. Go back afterwards and confirm
+`SECRET_KEY`, `MONGODB_URI` and `GEMINI_API_KEY` show as secret rather than
+plain text. There are no email or admin-bootstrap variables — Phase 2 creates
+the first account through registration.
 
 **Generate SECRET_KEY locally, never on the Render UI:**
 
@@ -417,11 +420,17 @@ If a secret ever leaks:
 Run through this once after the first successful deploy.
 
 ```text
-[ ] https://knowledgedock.onrender.com/health returns 200
-[ ] Atlas dashboard shows the knowledgedock database
-[ ] Atlas has exactly 1 vector index (limit is 3 on M0)
-[ ] Render Events log shows no errors after startup
-[ ] Render dashboard → the SECRET_KEY / MONGODB_URI / GEMINI_API_KEY rows
+[ ] https://knowledgedock.onrender.com/health returns 200 {"status":"ok"}
+[ ] https://knowledgedock.onrender.com/health/ready returns 200
+    {"status":"ready","database":"up"}   <- proves Atlas credentials + network
+[ ] https://knowledgedock.onrender.com/ renders the Bootstrap shell
+[ ] Render Events log shows "Application startup complete" with no traceback
+[ ] Render dashboard -> the SECRET_KEY / MONGODB_URI / GEMINI_API_KEY rows
     show as secret, not plain text
 [ ] git status shows no .env staged
 ```
+
+If `/health` is 200 but `/health/ready` is 503, the container is fine and Atlas
+is not reachable. Read the `mongodb.ping_failed` log line: a
+`ServerSelectionTimeoutError` means Network Access is not `0.0.0.0/0`, and
+`Authentication failed` means the password in `MONGODB_URI` is wrong.
