@@ -1,4 +1,18 @@
-# KnowledgeDock
+<p align="center">
+  <img src="src/knowledgedock/static/logo.png" alt="KnowledgeDock logo" width="120" height="120" />
+</p>
+
+<h1 align="center">KnowledgeDock</h1>
+
+<p align="center"><strong>Your documents, answered intelligently.</strong></p>
+
+<p align="center">
+  <em>An API-first AI knowledge retrieval platform — upload documents, search semantically, and ask questions answered with retrieved context.</em>
+</p>
+
+---
+
+## Overview
 
 KnowledgeDock is an API-first AI knowledge retrieval application that lets users upload documents, process their content, search the stored knowledge semantically, and ask questions that are answered using retrieved document context.
 
