@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="p-4 mb-4 bg-body rounded-3">
+  <h1 class="h3">Foundation is up.</h1>
+  <p class="text-body-secondary mb-0">
+    Authentication, documents, ingestion, retrieval and RAG land in the following
+    phases. Track them in <code>.agents/roadmap.md</code>.
+  </p>
+</div>
+
+<div class="row g-3">
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-body">
+        <h2 class="h6 text-uppercase text-body-secondary">Liveness</h2>
+        <a class="text-decoration-none" href="/api/docs">OpenAPI docs &rarr;</a>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-body">
+        <h2 class="h6 text-uppercase text-body-secondary">Readiness</h2>
+        <p class="mb-0 placeholder-dashed">MongoDB Atlas ping</p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
