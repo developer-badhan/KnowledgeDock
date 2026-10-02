@@ -3,6 +3,8 @@
 Single source of truth for build progress. Update `[ ]` → `[x]` as each item is
 completed and verified. Never mark an item complete without tests/verification.
 
+Deployment setup (Atlas / Gemini / Render): `.agents/DEPLOYMENT.md`
+
 ---
 
 ## Progress
@@ -70,12 +72,18 @@ endpoint, Docker. See `README.md` §18 Phase 1 and `SKILL.md` §27 items 1–5.
 
 | Constraint | Consequence |
 |---|---|
-| Render free web service | Single instance, 512 MB RAM, no separate worker, no Redis, ephemeral disk, spins down when idle |
+| Render free web service | Single instance, 512 MB RAM, no separate worker, no Redis, ephemeral disk, spins down after 15 min idle (~1 min cold start) |
 | Render injects `PORT` (default 10000) | App must bind `0.0.0.0:$PORT`; never hard-code a port |
 | Render terminates TLS and proxies | `--proxy-headers` on; trusted forwarded IPs from the platform |
-| MongoDB Atlas M0 | No separate vector index server needed — `$vectorSearch` runs on the shared cluster; TLS always on, so no TLS env flag |
+| Render has no static egress IP | Atlas Network Access must allow `0.0.0.0/0`; app-level auth + rate limiting are the real defence |
+| MongoDB Atlas M0 | 100 ops/sec; max **3** Atlas Search/Vector indexes total → use exactly **one** vector index with `workspace_id` as a `filter` field, not a separate index. TLS always on. |
+| Gemini free tier | Flash-class models only (Pro is paid). `gemini-2.5-flash` ≈ 10 RPM / 250 RPD. Never enable billing. |
+| `gemini-embedding-001` | 128–3072 dims, **recommended 768**; 2048 input-token limit per chunk → `GEMINI_EMBEDDING_MAX_INPUT_TOKENS=1800`. Non-3072 dims are not pre-normalised, but Atlas `cosine` normalises internally. |
+| Gemini task types | Documents embed with `RETRIEVAL_DOCUMENT`, queries with `RETRIEVAL_QUERY`. Using the same task type for both degrades retrieval quality. |
 | Ephemeral filesystem | Raw uploads live in `/tmp` and are disposable; chunks + vectors in MongoDB are the source of truth |
 | Same-origin UI only | No CORS config, no external frontend framework, no CDN-hosted app code — only Bootstrap/HTMX CSS+JS from CDN |
+
+Full setup walkthrough: `.agents/DEPLOYMENT.md`
 
 Notes:
 
