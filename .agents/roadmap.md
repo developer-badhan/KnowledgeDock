@@ -58,12 +58,24 @@ Branch: `phase-01-foundation`
 Scope: project structure, configuration, FastAPI app, MongoDB connection, health
 endpoint, Docker. See `README.md` §18 Phase 1 and `SKILL.md` §27 items 1–5.
 
-- [ ] `src/` layout: `api/`, `core/`, `domain/`, `application/`, `infrastructure/`, `workers/`, `templates/`, `static/`
+- [ ] `src/knowledgedock/` layout: `api/`, `core/`, `domain/`, `application/`, `infrastructure/`, `workers/`, `templates/`, `static/`
 - [ ] Typed settings module loading env vars via pydantic-settings (no hard-coded secrets)
 - [ ] FastAPI application factory + lifespan handler
-- [ ] MongoDB async client + connection lifecycle (ping on startup)
+- [ ] Jinja2 `StaticFiles` + `Jinja2Templates` wired (Bootstrap + HTMX via CDN)
+- [ ] MongoDB async client + connection lifecycle (ping on startup) against Atlas
 - [ ] `GET /health` (liveness) and `GET /health/ready` (MongoDB readiness)
-- [ ] Dockerfile + docker-compose (api + mongo) + `.env.sample` wired
+- [ ] Multi-stage Dockerfile with uv layer caching + `.dockerignore` + `.env.sample` wired
+
+### Phase 01 constraints (fixed by deployment target)
+
+| Constraint | Consequence |
+|---|---|
+| Render free web service | Single instance, 512 MB RAM, no separate worker, no Redis, ephemeral disk, spins down when idle |
+| Render injects `PORT` (default 10000) | App must bind `0.0.0.0:$PORT`; never hard-code a port |
+| Render terminates TLS and proxies | `--proxy-headers` on; trusted forwarded IPs from the platform |
+| MongoDB Atlas M0 | No separate vector index server needed — `$vectorSearch` runs on the shared cluster; TLS always on, so no TLS env flag |
+| Ephemeral filesystem | Raw uploads live in `/tmp` and are disposable; chunks + vectors in MongoDB are the source of truth |
+| Same-origin UI only | No CORS config, no external frontend framework, no CDN-hosted app code — only Bootstrap/HTMX CSS+JS from CDN |
 
 Notes:
 
@@ -199,7 +211,7 @@ Branch: `phase-09-frontend`
 
 Scope: dashboard, document management, upload, processing status, knowledge query interface.
 
-- [ ] Base layout + Bootstrap + HTMX wiring, static asset serving
+- [ ] Base layout + Bootstrap 5 CDN + HTMX CDN, FastAPI `Jinja2Templates` + `StaticFiles`
 - [ ] Login / register screens
 - [ ] Dashboard with workspace switcher
 - [ ] Upload screen (drag-drop + HTMX upload + progress)
@@ -207,7 +219,7 @@ Scope: dashboard, document management, upload, processing status, knowledge quer
 - [ ] Ask Knowledge Base UI — answer rendering with source citations
 - [ ] Conversation history view
 
-Notes:
+Notes: same-origin only. No JS framework, no build step, no CORS config.
 
 ---
 
@@ -223,10 +235,15 @@ Scope: tests, Docker, environment configuration, security review, observability,
 - [ ] Retrieval + RAG tests (workspace filter, threshold, no-answer, provider failure)
 - [ ] Reliability tests (timeout, retry bounds, controlled provider errors)
 - [ ] End-to-end test of the full flow in `SKILL.md` §40
-- [ ] Production Dockerfile (multi-stage, non-root) + compose healthchecks
+- [ ] Render deployment verified — env vars set, health check path `/health`, `$PORT` honoured, Atlas IP allowlist includes Render egress
+- [ ] Production Dockerfile verified (multi-stage, non-root, layer caching) + image size check
 - [ ] Security review — secrets, file limits, upload validation, error leakage
-- [ ] Observability — metrics/log fields, usage reporting endpoint `GET /usage`
+- [ ] Observability — structured JSON logs, usage reporting endpoint `GET /usage`
 - [ ] README + `SKILL.md`/roadmap updates documenting final architecture and decisions
+
+Notes: Docker is a build/deploy artifact, not a local MongoDB stack. There is no
+local MongoDB compose file — Atlas M0 is the only database. `uvicorn` is the
+rendered web server; Render injects `PORT` (10000 by default).
 
 Notes:
 

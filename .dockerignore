@@ -1,0 +1,56 @@
+# =============================================================================
+# Keep the Docker build context small and prevent secrets from entering layers.
+# Anything listed here is invisible to the docker daemon.
+# =============================================================================
+
+# ---- Secrets (never bake credentials into an image) ----
+.env
+.env.*
+!.env.sample
+
+# ---- VCS / tooling ----
+.git
+.gitignore
+.github
+.agents
+
+# ---- Docs / editor ----
+README.md
+LICENSE
+docs
+.vscode
+.idea
+
+# ---- Docker files ----
+Dockerfile
+.dockerignore
+docker-compose*.yml
+compose*.yml
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+
+# ---- Tests & local data ----
+tests
+data/
+storage/
+volumes/
+*.log
+logs/
+tmp/
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
