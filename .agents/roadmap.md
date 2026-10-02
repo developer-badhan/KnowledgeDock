@@ -10,18 +10,18 @@ Deployment setup (Atlas / Gemini / Render): `.agents/DEPLOYMENT.md`
 ## Progress
 
 ```text
-Phase 01 Foundation          [ ]  0/6
+Phase 01 Foundation          [x]  7/7
 Phase 02 Authentication      [ ]  0/6
-Phase 03 Workspaces          [ ]  0/5
+Phase 03 Workspaces          [ ]  0/6
 Phase 04 Documents           [ ]  0/6
 Phase 05 Ingestion           [ ]  0/7
 Phase 06 Retrieval           [ ]  0/6
 Phase 07 RAG                 [ ]  0/7
 Phase 08 Reliability         [ ]  0/8
 Phase 09 Frontend            [ ]  0/6
-Phase 10 Production Readiness [ ]  0/8
+Phase 10 Production Readiness [ ]  0/9
 
-Overall: [████░░░░░░░░░░░░░░░░░░░░░░░░░░] 0% (0/65)
+Overall: [██░░░░░░░░░░░░░░░░░░░░░░░░░░░] 11% (7/65)
 ```
 
 Legend: `[ ]` not started · `[x]` complete
@@ -55,18 +55,24 @@ phase-10-integration-tests
 
 ## Phase 01 — Foundation
 
-Branch: `phase-01-foundation`
+Branch: `phase-01-health-endpoint`
 
 Scope: project structure, configuration, FastAPI app, MongoDB connection, health
 endpoint, Docker. See `README.md` §18 Phase 1 and `SKILL.md` §27 items 1–5.
 
-- [ ] `src/knowledgedock/` layout: `api/`, `core/`, `domain/`, `application/`, `infrastructure/`, `workers/`, `templates/`, `static/`
-- [ ] Typed settings module loading env vars via pydantic-settings (no hard-coded secrets)
-- [ ] FastAPI application factory + lifespan handler
-- [ ] Jinja2 `StaticFiles` + `Jinja2Templates` wired (Bootstrap + HTMX via CDN)
-- [ ] MongoDB async client + connection lifecycle (ping on startup) against Atlas
-- [ ] `GET /health` (liveness) and `GET /health/ready` (MongoDB readiness)
-- [ ] Multi-stage Dockerfile with uv layer caching + `.dockerignore` + `.env.sample` wired
+- [x] `src/knowledgedock/` layout: `api/`, `core/`, `domain/`, `application/`, `infrastructure/`, `workers/`, `templates/`, `static/`
+- [x] Typed settings module loading env vars via pydantic-settings (no hard-coded secrets)
+- [x] FastAPI application factory + lifespan handler
+- [x] Jinja2 `StaticFiles` + `Jinja2Templates` wired (Bootstrap + HTMX via CDN)
+- [x] MongoDB async client + connection lifecycle (ping on startup) against Atlas
+- [x] `GET /health` (liveness) and `GET /health/ready` (MongoDB readiness)
+- [x] Multi-stage Dockerfile with uv layer caching + `.dockerignore` + `.env.sample` wired
+
+Verified: 18 tests pass, `ruff check` + `ruff format` clean. Live smoke test —
+`/health` 200, `/health/ready` 503 with Atlas unreachable, `/` 200,
+`/static/app.css` 200, `/api/docs` 200, JSON access logs carry `request_id`.
+`domain/`, `application/` and `workers/` are still empty — Phases 2, 3/4 and 5
+create them.
 
 ### Phase 01 constraints (fixed by deployment target)
 
@@ -279,4 +285,11 @@ Roadmap updated
 
 | # | Phase | Decision | Reason |
 |---|-------|----------|--------|
-| 1 | | | |
+| 1 | 01 | Use PyMongo's native `AsyncMongoClient`, not the deprecated `motor` | `motor` is EOL; PyMongo 4.13+ ships async in the core driver, so one dependency covers both the driver and the types |
+| 2 | 01 | `pymongo`, not `motor` — async driver is first-party | avoids a dependency that upstream has stopped maintaining |
+| 3 | 01 | Mongo startup failure does **not** raise | On Render the process must bind `$PORT` even when Atlas is unreachable, otherwise Render restart-loops. `/health` stays 200, `/health/ready` returns 503 and reports the truth |
+| 4 | 01 | `pydantic-settings` with `enable_decoding=False` | `ALLOWED_CONTENT_TYPES` is comma-separated, not JSON. Without this the source layer tries `json.loads()` and raises before field validators run |
+| 5 | 01 | Standard-library JSON logging, no structlog | One dep already exists for this; a 15-line formatter avoids adding one just for JSON output |
+| 6 | 01 | `create_app(settings, *, mongo_manager=None)` seam | Lets tests exercise the real HTTP stack including lifespan without a live Atlas, instead of monkeypatching internals |
+| 7 | 01 | Project is not pip-installed in the Docker image; `PYTHONPATH=/app/src` | Keeps `uv sync` from rebuilding the project on every code change, which is what makes the layer cache work |
+| 8 | 01 | Atlas M0 allows only 3 vector/search indexes | Phase 5 will declare `workspace_id` as a `filter` field inside the single vector index instead of relying on extra indexes |

@@ -1,0 +1,15 @@
+:root {
+  --kd-accent: #6ea8fe;
+}
+
+body {
+  min-height: 100vh;
+}
+
+.placeholder-dashed {
+  border: 1px dashed var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  padding: 2rem;
+  text-align: center;
+  color: var(--bs-secondary-color);
+}
