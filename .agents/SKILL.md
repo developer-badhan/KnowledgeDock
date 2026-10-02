@@ -22,6 +22,84 @@ The human should make architectural decisions and review the resulting implement
 
 ---
 
+# Workflow Rules (Mandatory)
+
+These rules are non-negotiable and override any conflicting convenience later in
+this document.
+
+## 1) Track progress in `.agents/roadmap.md`
+
+`.agents/roadmap.md` is the single source of truth for project progress.
+
+- Before starting any work, read `.agents/roadmap.md`.
+- Whenever a functionality on **any** phase is completed, flip its checkbox from
+  `[ ]` to `[x]`.
+- Recompute and update the **Progress** block at the top of the file
+  (per-phase counts, overall count, and the ASCII progress bar) after each update.
+- Never mark an item `[x]` unless it is implemented *and* verified.
+- Record architectural decisions in the **Decision Log** table at the bottom.
+
+## 2) Always create a branch before working on functionality
+
+Never implement functionality directly on `main`.
+
+- Create a branch **before** touching code for a phase or a group of
+  functionalities.
+- Branch name combines the phase and the core functionality name:
+
+```text
+<phase>-<core-functionality>
+
+phase-01-project-structure
+phase-01-database-connection
+phase-02-user-registration
+phase-02-jwt-authentication
+phase-03-workspace-creation
+phase-04-document-upload
+phase-05-text-chunking
+phase-06-vector-search
+phase-07-rag-pipeline
+phase-08-rate-limiting
+phase-09-dashboard
+phase-10-integration-tests
+```
+
+- Work in coherent, reviewable increments on that branch.
+- Update `.agents/roadmap.md` inside the same branch.
+
+## 3) Use `uv` for all dependency management
+
+Never use `pip install` directly, and never hand-edit `uv.lock`.
+
+```bash
+uv add <package>            # add a runtime dependency
+uv add --dev <package>      # add a dev dependency (pytest, ruff, mypy, ...)
+uv remove <package>         # remove a dependency
+uv sync                     # install/sync the environment from the lockfile
+uv sync --dev               # include dev dependencies
+uv run <command>            # run inside the project environment
+uv lock                     # regenerate the lockfile (only when required)
+```
+
+- Always regenerate `uv.lock` rather than deleting it.
+- Commit `pyproject.toml`, `uv.lock`, and `.python-version`.
+
+## 4) Merge sub-branches into `main` manually
+
+- Merge locally by hand. **Do not create pull requests.**
+- Use an explicit merge so history stays readable:
+
+```bash
+git checkout main
+git merge --no-ff phase-01-project-structure
+git push origin main
+```
+
+- Push the feature branch too, so remote and local stay aligned.
+- **Never delete a sub branch**, even after it is merged.
+
+---
+
 # 1. Primary Objective
 
 Build **KnowledgeDock**, an API-first AI knowledge retrieval application.
