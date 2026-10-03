@@ -10,7 +10,7 @@ Deployment setup (Atlas / Gemini / Render): `.agents/DEPLOYMENT.md`
 ## Progress
 
 ```text
-Phase 01 Foundation          [x]  7/7
+Phase 01 Foundation          [ ]  7/8
 Phase 02 Authentication      [ ]  0/6
 Phase 03 Workspaces          [ ]  0/6
 Phase 04 Documents           [ ]  0/6
@@ -21,7 +21,7 @@ Phase 08 Reliability         [ ]  0/8
 Phase 09 Frontend            [ ]  0/6
 Phase 10 Production Readiness [ ]  0/9
 
-Overall: [██░░░░░░░░░░░░░░░░░░░░░░░░░░░] 11% (7/65)
+Overall: [██░░░░░░░░░░░░░░░░░░░░░░░░░░░] 11% (7/66)
 ```
 
 Legend: `[ ]` not started · `[x]` complete
@@ -68,11 +68,22 @@ endpoint, Docker. See `README.md` §18 Phase 1 and `SKILL.md` §27 items 1–5.
 - [x] `GET /health` (liveness) and `GET /health/ready` (MongoDB readiness)
 - [x] Multi-stage Dockerfile with uv layer caching + `.dockerignore` + `.env.sample` wired
 
-Verified: 18 tests pass, `ruff check` + `ruff format` clean. Live smoke test —
-`/health` 200, `/health/ready` 503 with Atlas unreachable, `/` 200,
-`/static/app.css` 200, `/api/docs` 200, JSON access logs carry `request_id`.
+Verified: 38 tests pass, `ruff check` + `ruff format` clean. Local smoke test —
+`/health`, `/healthz`, `/health/ready`, `/readyz` all respond correctly;
+`/static/app.css` 200; `/api/docs` 200; JSON access logs carry `request_id`.
 `domain/`, `application/` and `workers/` are still empty — Phases 2, 3/4 and 5
 create them.
+
+- [x] Deployed to Render free tier, image builds, container binds `$PORT`
+- [ ] **Production database verified** — `/readyz` must return
+      `{"status":"ready","database":"up"}` from inside the container
+
+> Deployment status: liveness is green, readiness is **503 / `database: down`**.
+> Atlas is unreachable from Render while the identical URI works from the local
+> machine, which isolates the cause to Atlas Network Access rather than
+> credentials or DNS. Phase 2 is blocked until this closes: authentication
+> writes users to MongoDB, and building it on an unreachable database would
+> mean writing against a layer that cannot be exercised.
 
 ### Phase 01 constraints (fixed by deployment target)
 
