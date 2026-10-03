@@ -22,12 +22,24 @@ from knowledgedock import __version__
 from knowledgedock.api.auth import router as auth_router
 from knowledgedock.api.dependencies import SESSION_COOKIE_NAME
 from knowledgedock.api.health import router as health_router
+from knowledgedock.api.workspaces import router as workspaces_router
 from knowledgedock.application.auth.use_cases import (
     AuthenticateUser,
     ConfirmPasswordReset,
     RegisterUser,
     RequestPasswordReset,
     ResolveCurrentUser,
+)
+from knowledgedock.application.workspaces.use_cases import (
+    AddMember,
+    AuthorizeWorkspace,
+    CreateWorkspace,
+    DeleteWorkspace,
+    GetWorkspace,
+    ListMembers,
+    ListWorkspaces,
+    RemoveMember,
+    RenameWorkspace,
 )
 from knowledgedock.core.config import Settings, get_settings
 from knowledgedock.core.logging import configure_logging
@@ -36,6 +48,10 @@ from knowledgedock.infrastructure.mongo import MongoManager
 from knowledgedock.infrastructure.repositories.user_repository import (
     MongoUserRepository,
     UnavailableUserRepository,
+)
+from knowledgedock.infrastructure.repositories.workspace_repository import (
+    MongoWorkspaceRepository,
+    UnavailableWorkspaceRepository,
 )
 from knowledgedock.infrastructure.security.passwords import PasswordHasher
 from knowledgedock.infrastructure.security.tokens import TokenService
@@ -48,6 +64,7 @@ def create_app(
     *,
     mongo_manager: MongoManager | None = None,
     user_repository=None,
+    workspace_repository=None,
     hasher: PasswordHasher | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
@@ -87,6 +104,24 @@ def create_app(
                 )
                 repository = UnavailableUserRepository(exc)
 
+        # Workspaces share the database handle but get their own repository so a
+        # test can inject either one independently. Both fall back together: if
+        # the handle is unavailable, neither is usable.
+        if workspace_repository is not None:
+            workspaces_repo = workspace_repository
+        elif isinstance(repository, UnavailableUserRepository):
+            workspaces_repo = UnavailableWorkspaceRepository(repository.cause)
+        else:
+            try:
+                workspaces_repo = MongoWorkspaceRepository(mongo.database())
+            except Exception as exc:  # pragma: no cover - mirrors the user path
+                logger.error(
+                    "workspaces.repository_unavailable",
+                    extra={"error": "could not reach the database at startup"},
+                    exc_info=True,
+                )
+                workspaces_repo = UnavailableWorkspaceRepository(exc)
+
         app.state.register_user = RegisterUser(
             repository,
             password_hasher,
@@ -107,7 +142,20 @@ def create_app(
             minimum_password_length=settings.password_min_length,
         )
 
-        await _ensure_indexes(repository)
+        # Workspace use cases. `authorize_workspace` is exposed on its own because
+        # it is the single isolation gate that later phases depend on.
+        authorize = AuthorizeWorkspace(workspaces_repo)
+        app.state.authorize_workspace = authorize
+        app.state.create_workspace = CreateWorkspace(workspaces_repo)
+        app.state.list_workspaces = ListWorkspaces(workspaces_repo)
+        app.state.get_workspace = GetWorkspace(workspaces_repo, authorize)
+        app.state.rename_workspace = RenameWorkspace(workspaces_repo, authorize)
+        app.state.delete_workspace = DeleteWorkspace(workspaces_repo, authorize)
+        app.state.list_members = ListMembers(workspaces_repo, authorize)
+        app.state.add_member = AddMember(workspaces_repo, repository, authorize)
+        app.state.remove_member = RemoveMember(workspaces_repo, authorize)
+
+        await _ensure_indexes(repository, workspaces_repo)
 
         try:
             yield
@@ -165,6 +213,7 @@ def create_app(
     app.mount("/static", StaticFiles(directory=settings.static_dir), name="static")
     app.include_router(health_router)
     app.include_router(auth_router)
+    app.include_router(workspaces_router)
 
     @app.get("/", include_in_schema=False)
     async def index(request: Request) -> Response:
@@ -177,7 +226,7 @@ def create_app(
     return app
 
 
-async def _ensure_indexes(repository) -> None:
+async def _ensure_indexes(repository, workspace_repository=None) -> None:
     """Create indexes, tolerating failure.
 
     A missing unique index would allow duplicate accounts, so the failure is
@@ -186,6 +235,8 @@ async def _ensure_indexes(repository) -> None:
     """
     try:
         await repository.ensure_indexes()
+        if workspace_repository is not None:
+            await workspace_repository.ensure_indexes()
     except Exception:
         logger.error(
             "mongodb.index_creation_failed",

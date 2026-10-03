@@ -112,12 +112,19 @@ class TestSettingsLoading:
         assert settings.ai_provider == "null"
 
     def test_optional_values_fall_back_to_code_defaults(self, settings: Settings) -> None:
+        # None of these appear in the test .env, so each must come from the
+        # code default rather than from configuration.
         assert settings.port == 8000
         assert settings.jwt_expire_minutes == 60
         assert settings.chunk_size == 1000
+        assert settings.chunk_overlap == 200
         assert settings.retrieval_top_k == 5
+        assert settings.retrieval_min_score == pytest.approx(0.35)
+        assert settings.context_max_chars == 6000
         assert settings.gemini_embedding_dimensions == 768
-        assert settings.log_level == "INFO"
+        assert settings.gemini_chat_model == "gemini-3.8-flash"
+        assert settings.rate_limit_per_minute == 60
+        assert settings.processing_max_attempts == 3
 
     def test_comma_separated_content_types_become_a_tuple(self, settings: Settings) -> None:
         assert settings.allowed_content_types == ("text/plain", "text/markdown")

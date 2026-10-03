@@ -14,6 +14,12 @@ from knowledgedock.domain.errors import (
     ValidationFailed,
 )
 from knowledgedock.domain.users import User
+from knowledgedock.domain.workspaces import (
+    Workspace,
+    WorkspaceAccess,
+    WorkspaceMember,
+    WorkspaceRole,
+)
 
 __all__ = [
     "AppError",
@@ -24,4 +30,8 @@ __all__ = [
     "PermissionDenied",
     "User",
     "ValidationFailed",
+    "Workspace",
+    "WorkspaceAccess",
+    "WorkspaceMember",
+    "WorkspaceRole",
 ]
