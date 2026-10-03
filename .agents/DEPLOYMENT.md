@@ -491,15 +491,20 @@ will stop startup. See `.env.sample` for the full list.
 Run through this once after the first successful deploy.
 
 ```text
-[ ] https://knowledgedock.onrender.com/health returns 200 {"status":"ok"}
-[ ] https://knowledgedock.onrender.com/health/ready returns 200
-    {"status":"ready","database":"up"}   <- proves Atlas credentials + network
-[ ] https://knowledgedock.onrender.com/ renders the Bootstrap shell
-[ ] Render Events log shows "Application startup complete" with no traceback
-[ ] Render dashboard -> the SECRET_KEY / MONGODB_URI / GEMINI_API_KEY rows
-    show as secret, not plain text
-[ ] git status shows no .env staged
+[x] /health       200  {"status":"ok"}
+[x] /healthz      200  {"status":"ok"}
+[x] /readyz       200  {"status":"ready","database":"up"}
+[x] /health/ready 200  {"status":"ready","database":"up"}
+[x] /             200  Bootstrap shell
+[x] /api/docs     404  production flag in effect, schema not published
+[x] Render logs show "Application startup complete" with no traceback
+[x] SECRET_KEY / MONGODB_URI / GEMINI_API_KEY marked secret in the dashboard
+[x] .env untracked; no secret present in git history
 ```
+
+All verified against `https://knowledgedock.onrender.com`. `/readyz` returning
+`database: up` is the one that matters — it is the only check that exercises
+Atlas credentials, TLS and Network Access from inside the container.
 
 If `/health` is 200 but `/health/ready` is 503, the container is fine and Atlas
 is not reachable. Read the `mongodb.ping_failed` log line: a
