@@ -448,6 +448,23 @@ base is the symptom. Keep `FROM ...-trixie-slim` and `FROM python:3.12-slim-trix
 on the same release, and keep the same `/usr/local` Python layout so the copied
 `.venv` interpreter symlink resolves.
 
+## `chown: invalid group: 'appuser:appuser'`
+
+The runtime user was created without a matching group. `adduser --system` does
+not create a same-named group, so `chown user:group` has nothing to resolve
+against. The Dockerfile now creates both explicitly with `groupadd`/`useradd`
+and a named `--gid`.
+
+## `adduser: command not found` / `useradd: command not found`
+
+Neither binary is present. Debian splits these into the `adduser` and `passwd`
+packages and slim images carry a minimal set. Install them first:
+
+```dockerfile
+RUN apt-get update && apt-get install -y --no-install-recommends adduser passwd \
+    && rm -rf /var/lib/apt/lists/*
+```
+
 ## `"/src": not found`
 
 `src/` was not in the build context. Check `.dockerignore` does not exclude it,

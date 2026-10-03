@@ -68,10 +68,20 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Unprivileged runtime user. Render overrides $PORT via its own env var.
-# `adduser` (priority: important) is always present on debian slim;
-# `useradd` comes from the optional `passwd` package and is not guaranteed.
-# `--system` implies a same-named group, a nologin shell and no password.
-RUN adduser --system --uid 10001 --no-create-home --home /nonexistent appuser \
+#
+# Group and user are created explicitly rather than relying on adduser defaults:
+# `adduser --system` does NOT create a same-named group (it assigns the primary
+# group from /etc/default/useradd), so `chown appuser:appuser` would fail with
+# "invalid group". Naming --gid removes that ambiguity. uid/gid 10001 sit
+# outside the 0-999 system range on purpose, which also silences the
+# SYS_UID_MAX warning.
+#
+# adduser is not used here: it is a perl wrapper that shells out to useradd,
+# and both binaries ship in the python:slim base, so calling useradd directly
+# skips a layer of indirection.
+RUN groupadd --gid 10001 appuser \
+    && useradd --uid 10001 --gid 10001 --no-create-home \
+        --home-dir /nonexistent --shell /usr/sbin/nologin appuser \
     && mkdir -p "$STORAGE_DIR" \
     && chown -R appuser:appuser "$STORAGE_DIR"
 
