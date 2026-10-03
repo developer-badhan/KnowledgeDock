@@ -42,8 +42,9 @@ htmlcov/
 venv/
 env/
 
-# ---- Tests & local data ----
+# ---- Tests, scripts & local data ----
 tests
+scripts
 data/
 storage/
 volumes/
