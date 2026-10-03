@@ -15,13 +15,13 @@ Phase 02 Authentication      [x]  6/6
 Phase 03 Workspaces          [x]  6/6
 Phase 04 Documents           [x]  7/7
 Phase 05 Ingestion           [x]  7/7
-Phase 06 Retrieval           [ ]  0/6
+Phase 06 Retrieval           [x]  6/6
 Phase 07 RAG                 [ ]  0/7
 Phase 08 Reliability         [ ]  0/8
 Phase 09 Frontend            [ ]  0/6
 Phase 10 Production Readiness [ ]  0/9
 
-Overall: [███████████░░░░░░░░░░░░░░░░░░░░░░░░░] 51% (34/67)
+Overall: [████████████░░░░░░░░░░░░░░░░░░░░░░░░░░] 60% (40/67)
 ```
 
 Legend: `[ ]` not started · `[x]` complete
@@ -585,14 +585,41 @@ Branch: `phase-06-retrieval`
 
 Scope: semantic search, top-K retrieval, similarity threshold, context construction.
 
-- [ ] `RetrievalService` — query embedding → vector search
-- [ ] Top-K retrieval with configurable `K`
-- [ ] Similarity threshold enforcement + no-answer signal
-- [ ] Workspace filter applied at the query level (never post-filtered)
-- [ ] Context builder — token/char budget, ordering, de-duplication
-- [ ] `POST /search` raw semantic search endpoint (no LLM) for tuning/debugging
+- [x] `RetrievalService` — query embedding → vector search
+- [x] Top-K retrieval with configurable `K`
+- [x] Similarity threshold enforcement + no-answer signal
+- [x] Workspace filter applied at the query level (never post-filtered)
+- [x] Context builder — token/char budget, ordering, de-duplication
+- [x] `POST /search` raw semantic search endpoint (no LLM) for tuning/debugging
 
-Notes:
+Notes: similarity is computed locally rather than read from Atlas. Against this
+cluster `$vectorSearch` returns no `score` field at all -- checked with no
+projection and again with an explicit `$project: {"score": 1}`, which silently
+produced documents without it. That also fixes the scale, which is what makes a
+threshold mean anything: Atlas reports cosine as `(cosineSimilarity + 1) / 2`, so
+unrelated text scores 0.5 and the old 0.35 default looked strict while admitting
+nearly everything. Measured against real Gemini embeddings, relevant matches land
+at 0.72-0.78, near misses at 0.56, and different topics at 0.50, so
+`RETRIEVAL_MIN_SCORE` now defaults to 0.65 and accepts negative values, since
+opposing text genuinely scores below zero.
+
+`$vectorSearch` also returned fewer rows than `limit` asked for against a live
+cluster, so ranking re-sorts and re-cuts locally: top-K and the threshold hold
+whether or not the index fills the request.
+
+No-answer distinguishes `no_matches` from `below_threshold`. They look identical
+otherwise, but the first is an ingestion bug and the second is a tuning decision.
+
+Verified end to end against Atlas with real Gemini embeddings: "How do I rotate an
+API key?" -> api_keys.txt 0.7798; "When does payroll run?" -> payroll.txt 0.7545;
+"What is the capital of Portugal?" -> no answer, 0.5006 below threshold. With an
+identical corpus seeded into two workspaces, a query returned only its own.
+
+`POST /search` reports `threshold`, `top_score`, `candidates_returned`,
+`below_threshold`, the embedding model and the assembled context including what
+the budget dropped. Scores belong to a query rather than to a document, so they
+are returned and forgotten -- persisting one would create state that goes stale
+against the corpus and is wrong for the next question.
 
 ---
 
