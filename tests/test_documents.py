@@ -34,6 +34,19 @@ PASSWORD = "a-perfectly-fine-password"
 TEXT = b"Credentials can be regenerated from the account security settings."
 
 
+class _EmptyResult:
+    deleted_count = 0
+    matched_count = 0
+    upserted_id = None
+
+
+class _EmptyCursor:
+    """A cursor that yields nothing, for the dead collections below."""
+
+    async def to_list(self, length: object = None) -> list:
+        return []
+
+
 def upload(
     client: TestClient,
     ws_id: str,

@@ -22,6 +22,10 @@ from fastapi.testclient import TestClient
 
 from knowledgedock.app import create_app
 from knowledgedock.core.config import Settings, load_settings
+from knowledgedock.infrastructure.ai.embedding import NullEmbeddingProvider
+from knowledgedock.infrastructure.repositories.chunk_repository import (
+    InMemoryChunkRepository,
+)
 from knowledgedock.infrastructure.repositories.document_repository import (
     InMemoryDocumentRepository,
 )
@@ -42,12 +46,16 @@ AI_PROVIDER=null
 GEMINI_API_KEY=test-key
 GEMINI_EMBEDDING_TASK_DOCUMENT=RETRIEVAL_DOCUMENT
 GEMINI_EMBEDDING_TASK_QUERY=RETRIEVAL_QUERY
-ALLOWED_CONTENT_TYPES=text/plain,text/markdown
+ALLOWED_CONTENT_TYPES=text/plain,text/markdown,text/html,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document
 # `create_app` calls `configure_logging`, which clears the root logger's
 # handlers and installs its own stdout stream. That is right in production and
 # wrong in a test run, where it buries assertion failures under JSON. Tests run
 # at CRITICAL; flip to INFO when debugging a specific failure.
 LOG_LEVEL=CRITICAL
+# Production polls every 10s. Tests that exercise the live worker override this so
+# they are not racing the production poll cadence -- at 10s with a 10s deadline,
+# whether a document is picked up in time is a coin flip.
+PROCESSING_POLL_INTERVAL_SECONDS=1
 """
 
 # Derived from .env.sample so the list cannot drift from the real contract.
@@ -85,11 +93,85 @@ class FakeDatabase:
 
 
 class _FakeCollection:
+    """Answers the calls a repository makes at startup, and nothing more.
+
+    Enough to construct the production object graph so the wiring is exercised.
+    Queries against it are not meaningful — tests that assert on data inject
+    `InMemory*Repository` instead.
+    """
+
     def __init__(self, name: str) -> None:
         self.name = name
 
     async def create_index(self, *args: Any, **kwargs: Any) -> str:
         return f"{self.name}_index"
+
+    async def count_documents(self, *args: Any, **kwargs: Any) -> int:
+        return 0
+
+    def find(self, *args: Any, **kwargs: Any) -> Any:
+        # Deliberately NOT async: PyMongo's async collection returns the cursor
+        # synchronously and the cursor is what you await `.to_list()` on.
+        return _FakeCursor([])
+
+    async def find_one(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def find_one_and_update(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def find_one_and_delete(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def insert_one(self, *args: Any, **kwargs: Any) -> Any:
+        return None
+
+    async def insert_many(self, *args: Any, **kwargs: Any) -> Any:
+        return None
+
+    async def delete_one(self, *args: Any, **kwargs: Any) -> Any:
+        return _FakeResult()
+
+    async def delete_many(self, *args: Any, **kwargs: Any) -> Any:
+        return _FakeResult()
+
+    async def update_one(self, *args: Any, **kwargs: Any) -> Any:
+        return _FakeResult()
+
+    async def list_search_indexes(self) -> Any:
+        return _FakeCursor([])
+
+    async def create_search_index(self, *args: Any, **kwargs: Any) -> str:
+        return "vector_index"
+
+
+class _FakeResult:
+    deleted_count = 0
+    matched_count = 0
+    upserted_id = None
+
+
+class _FakeCursor:
+    def __init__(self, items: list) -> None:
+        self._items = items
+
+    async def to_list(self, length: Any = None) -> list:
+        return self._items
+
+    def sort(self, *args: Any, **kwargs: Any) -> _FakeCursor:
+        return self
+
+    def skip(self, *args: Any, **kwargs: Any) -> _FakeCursor:
+        return self
+
+    def limit(self, *args: Any, **kwargs: Any) -> _FakeCursor:
+        return self
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
 
 
 class FakeMongoManager:
@@ -162,14 +244,27 @@ def users() -> InMemoryUserRepository:
     return InMemoryUserRepository()
 
 
-def _build_app(settings, users, workspaces, reachable=True, documents=None, storage=None):
+def _build_app(
+    settings,
+    users,
+    workspaces,
+    reachable=True,
+    documents=None,
+    storage=None,
+    chunks=None,
+    embeddings=None,
+    processing_enabled=False,
+):
     return create_app(
         settings,
         mongo_manager=FakeMongoManager(reachable=reachable),
         user_repository=users,
         workspace_repository=workspaces,
         document_repository=(documents if documents is not None else InMemoryDocumentRepository()),
+        chunk_repository=chunks if chunks is not None else InMemoryChunkRepository(),
         storage=storage if storage is not None else LocalFileStorage(make_storage_root()),
+        embeddings=embeddings or NullEmbeddingProvider(),
+        processing_enabled=processing_enabled,
     )
 
 
@@ -190,6 +285,9 @@ def _client(
     workspaces: InMemoryWorkspaceRepository | None = None,
     documents: InMemoryDocumentRepository | None = None,
     storage: LocalFileStorage | None = None,
+    chunks: InMemoryChunkRepository | None = None,
+    embeddings=None,
+    processing_enabled: bool = False,
 ) -> Iterator[TestClient]:
     app = _build_app(
         settings,
@@ -198,6 +296,9 @@ def _client(
         reachable=reachable,
         documents=documents,
         storage=storage,
+        chunks=chunks,
+        embeddings=embeddings,
+        processing_enabled=processing_enabled,
     )
     with TestClient(app) as test_client:
         test_client.users = app.state.register_user._repository  # type: ignore[attr-defined]
@@ -223,6 +324,18 @@ def ws_client(settings: Settings, workspaces: InMemoryWorkspaceRepository) -> It
 @pytest.fixture
 def documents() -> InMemoryDocumentRepository:
     return InMemoryDocumentRepository()
+
+
+@pytest.fixture
+def live_doc_client(
+    settings: Settings,
+    workspaces: InMemoryWorkspaceRepository,
+    documents: InMemoryDocumentRepository,
+) -> Iterator[TestClient]:
+    """A client whose ingestion worker is actually running."""
+    yield from _client(
+        settings, workspaces=workspaces, documents=documents, processing_enabled=True
+    )
 
 
 @pytest.fixture
@@ -328,3 +441,16 @@ def assert_hidden_from_outsider(real: object, missing: object, label: str) -> No
     assert real.json() == missing.json(), (
         f"{label}: a refusal must be byte-identical to the absent-resource response"
     )
+
+
+class _EmptyResult:
+    deleted_count = 0
+    matched_count = 0
+    upserted_id = None
+
+
+class _EmptyCursor:
+    """A cursor that yields nothing, for hand-rolled dead collections."""
+
+    async def to_list(self, length: Any = None) -> list:
+        return []

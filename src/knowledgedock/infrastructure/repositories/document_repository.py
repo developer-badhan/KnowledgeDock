@@ -21,13 +21,14 @@ existence.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
 
-from pymongo import ASCENDING, DESCENDING
+from pymongo import ASCENDING, DESCENDING, ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
-from knowledgedock.domain.documents import Document, DocumentPage
+from knowledgedock.domain.documents import Document, DocumentPage, DocumentStatus
 
 
 class DuplicateContentError(Exception):
@@ -54,6 +55,12 @@ class DocumentRepository(Protocol):
     async def delete_chunks(self, document_id: UUID) -> int: ...
 
     async def count_chunks(self, document_id: UUID) -> int: ...
+
+    async def claim_next_pending(self) -> Document | None: ...
+
+    async def find_stale_processing(self, cutoff: datetime) -> list[Document]: ...
+
+    async def find_retryable_failures(self, max_attempts: int) -> list[Document]: ...
 
 
 class MongoDocumentRepository:
@@ -151,6 +158,42 @@ class MongoDocumentRepository:
     async def count_chunks(self, document_id: UUID) -> int:
         return await self._chunks.count_documents({"document_id": document_id})
 
+    async def claim_next_pending(self) -> Document | None:
+        """Atomically take the oldest PENDING document and mark it PROCESSING.
+
+        The filter and the update are one operation, so two workers cannot claim
+        the same document. A plain `find_one` followed by an `update_one` would have
+        a window between them.
+        """
+        document = await self._documents.find_one_and_update(
+            {"status": str(DocumentStatus.PENDING)},
+            {"$set": {"status": str(DocumentStatus.PROCESSING)}},
+            sort=[("created_at", ASCENDING)],
+            return_document=ReturnDocument.AFTER,
+        )
+        return Document.from_document(document) if document else None
+
+    async def find_stale_processing(self, cutoff: datetime) -> list[Document]:
+        """Documents stuck in PROCESSING since before `cutoff`.
+
+        These were interrupted by a restart. `attempts` is left intact so the
+        retry budget still applies.
+        """
+        found = await self._documents.find(
+            {"status": str(DocumentStatus.PROCESSING), "updated_at": {"$lt": cutoff}}
+        ).to_list(length=None)
+        return [Document.from_document(d) for d in found]
+
+    async def find_retryable_failures(self, max_attempts: int) -> list[Document]:
+        """Failed documents that still have attempts left."""
+        found = await self._documents.find(
+            {
+                "status": str(DocumentStatus.FAILED),
+                "attempts": {"$lt": max_attempts},
+            }
+        ).to_list(length=None)
+        return [Document.from_document(d) for d in found]
+
 
 class InMemoryDocumentRepository:
     """Test double with the same semantics as `MongoDocumentRepository`."""
@@ -215,6 +258,32 @@ class InMemoryDocumentRepository:
     async def count_chunks(self, document_id: UUID) -> int:
         return len(self.chunks.get(document_id, []))
 
+    async def claim_next_pending(self) -> Document | None:
+        pending = [d for d in self.documents.values() if d.status is DocumentStatus.PENDING]
+        if not pending:
+            return None
+        pending.sort(key=lambda d: d.created_at)
+        chosen = pending[0]
+        # Mirror the atomic find_one_and_update: the claimed document is already
+        # PROCESSING in the returned object, exactly as the driver would.
+        claimed = chosen.transition_to(DocumentStatus.PROCESSING)
+        self.documents[chosen.id] = claimed
+        return claimed
+
+    async def find_stale_processing(self, cutoff: datetime) -> list[Document]:
+        return [
+            d
+            for d in self.documents.values()
+            if d.status is DocumentStatus.PROCESSING and d.updated_at < cutoff
+        ]
+
+    async def find_retryable_failures(self, max_attempts: int) -> list[Document]:
+        return [
+            d
+            for d in self.documents.values()
+            if d.status is DocumentStatus.FAILED and d.attempts < max_attempts
+        ]
+
 
 class UnavailableDocumentRepository:
     """Stands in when the document collections are unreachable at startup.
@@ -256,6 +325,15 @@ class UnavailableDocumentRepository:
         raise self._error()
 
     async def count_chunks(self, document_id: UUID) -> int:
+        raise self._error()
+
+    async def claim_next_pending(self) -> Document | None:
+        raise self._error()
+
+    async def find_stale_processing(self, cutoff: datetime) -> list[Document]:
+        raise self._error()
+
+    async def find_retryable_failures(self, max_attempts: int) -> list[Document]:
         raise self._error()
 
     def _error(self) -> Exception:

@@ -14,14 +14,14 @@ Phase 01 Foundation          [x]  8/8
 Phase 02 Authentication      [x]  6/6
 Phase 03 Workspaces          [x]  6/6
 Phase 04 Documents           [x]  7/7
-Phase 05 Ingestion           [ ]  0/7
+Phase 05 Ingestion           [x]  7/7
 Phase 06 Retrieval           [ ]  0/6
 Phase 07 RAG                 [ ]  0/7
 Phase 08 Reliability         [ ]  0/8
 Phase 09 Frontend            [ ]  0/6
 Phase 10 Production Readiness [ ]  0/9
 
-Overall: [████████░░░░░░░░░░░░░░░░░░░░░░░░░░] 40% (27/67)
+Overall: [███████████░░░░░░░░░░░░░░░░░░░░░░░░░] 51% (34/67)
 ```
 
 Legend: `[ ]` not started · `[x]` complete
@@ -475,13 +475,105 @@ Branch: `phase-05-ingestion`
 
 Scope: text extraction, normalization, chunking, embedding generation, vector storage.
 
-- [ ] Background worker (FastAPI BackgroundTasks first; swap for durable queue only when justified)
-- [ ] Text extractor per file type: `.txt`, `.md`, `.pdf`, `.html`, `.docx`
-- [ ] Normalizer — strip nulls, collapse whitespace, drop control chars, detect empty extraction
-- [ ] Chunker — configurable size/overlap, keeps `workspace_id`/`document_id`/`chunk_index`
-- [ ] `EmbeddingProvider` interface (Protocol/ABC) + OpenAI implementation
-- [ ] Batch embedding generation with retry/backoff and token accounting
-- [ ] `document_chunks` collection + Atlas Vector Search index with `workspace_id` filter preserved; persist chunks and mark document READY
+### Why a poller and not `BackgroundTasks`
+
+Render's free tier has no separate worker and no always-on instance. A task
+scheduled inside a request dies with the process, stranding the document in
+`PROCESSING` with nothing left to move it. A poller keyed off MongoDB survives
+restarts, because **the queue is the collection**:
+
+```text
+startup -> reclaim abandoned work -> loop { claim one PENDING -> process it }
+```
+
+- **Claiming is atomic.** `find_one_and_update` with a `status: pending` filter
+  moves the document to `processing` and returns it in one operation. A
+  `find_one` then `update_one` would leave a window where two workers take the
+  same document.
+- **Strictly sequential.** Two independent limits make concurrency a liability:
+  Atlas M0 allows 100 ops/sec and Gemini's free tier is rate limited per minute.
+  One worker stays well inside both and guarantees a single writer per document.
+- **Startup reclaims abandoned work.** Documents still `PROCESSING` past
+  `PROCESSING_STALE_AFTER_MINUTES` were interrupted by a restart, as were
+  `FAILED` documents with attempts left. Both return to `PENDING`.
+- **Shutdown is interruptible.** The idle sleep waits on an `asyncio.Event`, so
+  stopping does not wait out the poll interval.
+
+### Rules that were designed, not defaulted
+
+| Rule | Reason |
+|---|---|
+| Gemini called over REST with `httpx`, not the SDK | `SKILL.md` §35 prefers direct provider APIs, and this phase needs explicit control of timeout (§17), bounded retry (§17) and token accounting (§18) — all of which an SDK would hide. |
+| Documents embed with `RETRIEVAL_DOCUMENT`, queries with `RETRIEVAL_QUERY` | Using one for both measurably degrades retrieval. Tested per call. |
+| Vectors below 3072 dims are L2-normalised here | Gemini only pre-normalises its full-width output. Atlas `cosine` would normalise anyway, but storing the normalised value means it matches what a caller computing similarity locally gets. |
+| Retry on 429 and 5xx, never on 4xx | Retrying a malformed request only burns quota. |
+| Backoff is exponential **with full jitter** | Without jitter every request that failed together retries together and reproduces the burst that caused the failure. |
+| Chunking splits on structure first, size second | Paragraphs, then sentences, then word boundaries. Mid-word cuts produce tokens that match nothing. |
+| Overlap is real overlap | A sentence straddling a boundary is retrievable from either side; without it the answer is split across two chunks and neither contains it. |
+| Chunks under `min_chunk_size` are discarded | Headings and table fragments cost quota on a rate-limited tier and pollute retrieval. |
+| Text is normalised once, at extraction | It all ends up in an embedding and an LLM prompt, so it is cleaned in one place rather than defended against downstream. |
+| HTML is parsed with `html.parser`, dropping script/style | Standard library, no dependency, and it does not execute anything — an uploaded HTML file is untrusted input. |
+| Markdown is indexed with its syntax intact | Stripping it would only lose searchable terms. |
+| Chunk and document writes are separate repositories | A crash between them leaves chunks with no vectors, which are skipped by search — never a document marked READY without them. |
+| The vector index is created by the app | A hand-made index in the Atlas UI cannot be reviewed in version control or reproduced. M0 allows only three, so drift is expensive. |
+
+### The index is where isolation actually happens
+
+```python
+({"type": "vector", "path": "embedding", "numDimensions": 768, "similarity": "cosine"},)
+({"type": "filter", "path": "workspace_id"},)
+```
+
+`$vectorSearch` applies that filter **inside the index**, before scoring. A
+post-filter would retrieve the global top-k and then discard what belongs to
+another tenant — returning fewer than k results for a small workspace, and
+leaking information about what else exists.
+
+### Verification
+
+**310 tests pass** (237 previous + 73 new). `ruff check` and `ruff format` clean,
+and stable across five consecutive full runs.
+
+Covered: extraction for all five types including the untrusted-HTML and
+scanned-PDF failure messages, normalization (nulls, control characters, CRLF,
+Unicode folding), chunking budgets/overlap/minimum/sequential indices, the Gemini
+HTTP contract against a stub client (task type, dimensionality, retry/no-retry
+statuses, dimension mismatch, bad shape), the full pipeline to READY and to
+FAILED, worker claiming exclusivity and ordering, startup reclamation of
+interrupted and retryable documents, and outage tolerance.
+
+One test caught a real bug: `ProcessDocument` skipped any document that was not
+`PENDING`, but `claim_next_pending` has already flipped it to `PROCESSING` — so
+the worker skipped everything it had just claimed. `PROCESSING` is now a valid
+entry state; only `READY` and `FAILED` mean "already dealt with".
+
+**Verified against real Atlas with real Gemini embeddings:**
+
+```text
+vector index      created by the app, 1 index, status READY, filter on workspace_id
+embedding         gemini-embedding-001 -> 768 dimensions
+claim             atomic find_one_and_update returned the right document
+pipeline          document -> 1 chunk -> 1 vector -> READY
+scoped search     1 hit, and every hit belonged to the querying workspace
+cross-tenant      0 hits -- isolation is enforced inside the index, not after
+```
+
+Only one vector index exists on the cluster, against a limit of three.
+
+Notes: text extraction for `.docx` reads paragraphs and table cells, because a
+table is often the only content in a report. `.pdf` relies on a text layer; a
+scanned PDF fails with a message that says so rather than storing an empty
+document. Phase 6 owns the first `$vectorSearch` query; this phase proves the
+index works and that its filter isolates tenants.
+
+
+- [x] Background worker — MongoDB-backed **poller**, not `BackgroundTasks`
+- [x] Text extractor per file type: `.txt`, `.md`, `.pdf`, `.html`, `.docx`
+- [x] Normalizer — strip nulls, collapse whitespace, drop control chars, detect empty extraction
+- [x] Chunker — configurable size/overlap, keeps `workspace_id`/`document_id`/`chunk_index`
+- [x] `EmbeddingProvider` Protocol + **Gemini** implementation over REST (roadmap previously said OpenAI)
+- [x] Batch embedding generation with bounded retry, jittered backoff and token accounting
+- [x] `document_chunks` collection + Atlas Vector Search index created by the app, `workspace_id` declared as a filter field; chunks persisted and document marked READY
 
 Notes:
 
@@ -647,3 +739,10 @@ Roadmap updated
 | 38 | 04 | A concurrent duplicate upload is resolved in favour of the stored row | Two uploads of identical bytes race on the unique index. The loser re-reads the winner and treats its own upload as a replacement, returning the same 202 with replaced: true. Surfacing a 409 would make a double-clicking user think their upload failed. |
 | 39 | 04 | The stored path is derived from the content hash, never from the client filename | A filename is attacker-controlled text, and interpolating one into a path is how traversal happens. The filename is kept for display and sanitised; the extension comes from a content-type whitelist so an unexpected MIME type cannot pick an executable suffix. Containment is checked after resolve(), because '..' collapses during resolution. |
 | 40 | 04 | Upload answers 202, and does not itself process anything | The document exists but nothing has been extracted or embedded, which is Phase 5's job. Returning 201 would imply the work is done. The status is PENDING and the worker picks it up from a (status, created_at) index. |
+| 41 | 05 | MongoDB-backed poller instead of `BackgroundTasks` | Render's free tier has no separate worker and no always-on instance, so a request-scoped task dies with the process and strands the document in PROCESSING. A poller keyed off the collection survives restarts because the queue *is* the collection. Claiming is a single find_one_and_update, so two workers cannot take the same document even if a second instance ever runs. Revisit only if measurement justifies a real queue (SKILL.md §3). |
+| 42 | 05 | The ingestion worker is strictly sequential | Atlas M0 allows 100 operations per second and Gemini's free tier is rate limited per minute. Concurrency would breach both and would introduce a second writer per document for no measured benefit. Sequential also makes the worker's failure behaviour trivially correct. Change only on measurement, per SKILL.md §33. |
+| 43 | 05 | Gemini embeddings over REST with httpx, not the official SDK | SKILL.md §35 prefers direct provider APIs. This phase specifically needs explicit control over three things an SDK hides: a timeout on every call (§17), bounded retry that does not retry a 4xx (§17), and token accounting (§18). httpx was already a dev dependency, so this moves it to runtime rather than adding a package. |
+| 44 | 05 | The vector index is declared with `workspace_id` as a filter field, and created by the app | The filter is applied inside the index, before scoring. Post-filtering would take the global top-k and discard other tenants' results, returning fewer than k for a small workspace and leaking what else exists. Creating it in code keeps it reviewable and reproducible, and M0's three-index limit makes silent drift expensive. Verified: a cross-tenant query returns zero hits. |
+| 45 | 05 | Chunking splits on structure first and carries real overlap | Paragraphs, then sentences, then word boundaries; mid-word cuts produce tokens that match nothing. Overlap exists so a sentence straddling a boundary is retrievable from either side — without it the answer is split across two chunks and neither contains it. Fragments below min_chunk_size are discarded: they cost quota on a rate-limited tier and pollute retrieval with matches nobody wants. |
+| 46 | 05 | Vectors are L2-normalised in the application below 3072 dimensions | Gemini pre-normalises only its full-width output. Atlas' cosine metric would normalise anyway, but storing the normalised value means it matches what a caller computing cosine similarity locally would compute, and keeps the invariant with the NullEmbeddingProvider used in tests. |
+| 47 | 05 | Provider failures are mapped to FAILED, never left in PROCESSING | Any exception marks the document FAILED with a message safe to show an owner. A document stuck in PROCESSING is the one state nothing recovers by itself, which is exactly what the startup reclamation sweep then has to clean up. Expected failures and unexpected ones are both handled, so one bad document cannot take the worker loop down. |
