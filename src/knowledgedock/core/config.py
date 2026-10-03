@@ -135,8 +135,11 @@ class Settings:
             raise ValueError(
                 f"GEMINI_EMBEDDING_MAX_INPUT_TOKENS must be 1-{GEMINI_MAX_INPUT_TOKENS}"
             )
-        if not 0.0 <= self.retrieval_min_score <= 1.0:
-            raise ValueError("RETRIEVAL_MIN_SCORE must be between 0.0 and 1.0")
+        # Raw cosine, so the range is -1.0..1.0 and negative is meaningful:
+        # opposing text genuinely scores below zero. Clamping the bound to 0.0
+        # would silently accept a threshold that rejects everything.
+        if not -1.0 <= self.retrieval_min_score <= 1.0:
+            raise ValueError("RETRIEVAL_MIN_SCORE must be between -1.0 and 1.0")
         if not self.allowed_content_types:
             raise ValueError("ALLOWED_CONTENT_TYPES must list at least one content type")
 
@@ -238,7 +241,7 @@ def load_settings(source: Any | None = None) -> Settings:
         vector_index_name=optional("VECTOR_INDEX_NAME", "vector_index"),
         vector_similarity=optional("VECTOR_SIMILARITY", "cosine"),
         retrieval_top_k=optional("RETRIEVAL_TOP_K", 5, int),
-        retrieval_min_score=optional("RETRIEVAL_MIN_SCORE", 0.35, float),
+        retrieval_min_score=optional("RETRIEVAL_MIN_SCORE", 0.65, float),
         context_max_chars=optional("CONTEXT_MAX_CHARS", 6000, int),
         rate_limit_per_minute=optional("RATE_LIMIT_PER_MINUTE", 60, int),
         rate_limit_query_per_minute=optional("RATE_LIMIT_QUERY_PER_MINUTE", 10, int),

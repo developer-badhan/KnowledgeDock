@@ -25,6 +25,7 @@ from knowledgedock.api.auth import router as auth_router
 from knowledgedock.api.dependencies import SESSION_COOKIE_NAME
 from knowledgedock.api.documents import router as documents_router
 from knowledgedock.api.health import router as health_router
+from knowledgedock.api.search import router as search_router
 from knowledgedock.api.workspaces import router as workspaces_router
 from knowledgedock.application.auth.use_cases import (
     AuthenticateUser,
@@ -40,6 +41,7 @@ from knowledgedock.application.documents.use_cases import (
     UploadDocument,
 )
 from knowledgedock.application.ingestion.process_document import ProcessDocument
+from knowledgedock.application.retrieval.search import SemanticSearch
 from knowledgedock.application.workspaces.use_cases import (
     AddMember,
     AuthorizeWorkspace,
@@ -231,11 +233,16 @@ def create_app(
                 )
                 chunks_repo = UnavailableChunkRepository(exc)
 
+        # One provider shared by ingestion and retrieval: it owns an httpx client
+        # and a token counter, and two instances would double the connections and
+        # split the accounting that Phase 05 added for quota safety.
+        embedding_provider = embeddings or _build_embedding_provider(settings)
+
         process = ProcessDocument(
             documents=documents_repo,
             chunks=chunks_repo,
             storage=file_storage,
-            embeddings=embeddings or _build_embedding_provider(settings),
+            embeddings=embedding_provider,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
             min_chunk_size=settings.min_chunk_size,
@@ -251,6 +258,17 @@ def create_app(
         )
         app.state.ingestion_worker = worker
         app.state.chunk_repository = chunks_repo
+
+        app.state.semantic_search = SemanticSearch(
+            chunks=chunks_repo,
+            embeddings=embedding_provider,
+            index_name=settings.vector_index_name,
+            task_type=settings.gemini_embedding_task_query,
+            max_embed_tokens=settings.gemini_embedding_max_input_tokens,
+            top_k=settings.retrieval_top_k,
+            min_score=settings.retrieval_min_score,
+            context_max_characters=settings.context_max_chars,
+        )
 
         await _ensure_indexes(repository, workspaces_repo, documents_repo, chunks_repo)
 
@@ -344,6 +362,7 @@ def create_app(
     app.include_router(auth_router)
     app.include_router(workspaces_router)
     app.include_router(documents_router)
+    app.include_router(search_router)
 
     @app.get("/", include_in_schema=False)
     async def index(request: Request) -> Response:

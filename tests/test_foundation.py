@@ -132,7 +132,7 @@ class TestSettingsLoading:
         assert settings.chunk_size == 1000
         assert settings.chunk_overlap == 200
         assert settings.retrieval_top_k == 5
-        assert settings.retrieval_min_score == pytest.approx(0.35)
+        assert settings.retrieval_min_score == pytest.approx(0.65)
         assert settings.context_max_chars == 6000
         assert settings.gemini_embedding_dimensions == 768
         assert settings.gemini_chat_model == "gemini-3.8-flash"

@@ -31,6 +31,16 @@ class ChunkRepository(Protocol):
 
     async def count_for_document(self, document_id: UUID) -> int: ...
 
+    async def vector_search(
+        self,
+        *,
+        workspace_id: UUID,
+        query_vector: list[float],
+        index_name: str,
+        limit: int,
+        num_candidates: int,
+    ) -> list[dict[str, Any]]: ...
+
 
 class MongoChunkRepository:
     def __init__(self, database: Any) -> None:
@@ -67,6 +77,41 @@ class MongoChunkRepository:
     async def count_for_document(self, document_id: UUID) -> int:
         return await self._chunks.count_documents({"document_id": document_id})
 
+    async def vector_search(
+        self,
+        *,
+        workspace_id: UUID,
+        query_vector: list[float],
+        index_name: str,
+        limit: int,
+        num_candidates: int,
+    ) -> list[dict[str, Any]]:
+        # `index_name` and `num_candidates` are Atlas-side knobs: they change how
+        # the index approximates neighbours, not which documents match. The filter
+        # below is the part that decides tenancy, and it belongs in the index.
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "index": index_name,
+                    "path": "embedding",
+                    "queryVector": query_vector,
+                    "numCandidates": num_candidates,
+                    "limit": limit,
+                    # Inside the index, not a later stage. This is the whole
+                    # tenant-isolation guarantee for retrieval.
+                    "filter": {"workspace_id": {"$eq": workspace_id}},
+                }
+            }
+        ]
+        try:
+            cursor = await self._chunks.aggregate(pipeline)
+            return await cursor.to_list(length=limit)
+        except Exception as exc:
+            raise ServiceUnavailable(
+                "Could not search the document index.",
+                detail=f"{type(exc).__name__}: {exc}",
+            ) from exc
+
 
 class InMemoryChunkRepository:
     def __init__(self) -> None:
@@ -84,6 +129,40 @@ class InMemoryChunkRepository:
 
     async def count_for_document(self, document_id: UUID) -> int:
         return len(self.chunks.get(document_id, []))
+
+    async def vector_search(
+        self,
+        *,
+        workspace_id: UUID,
+        query_vector: list[float],
+        index_name: str,
+        limit: int,
+        num_candidates: int,
+    ) -> list[dict[str, Any]]:
+        del index_name, num_candidates
+        # Ranks for real rather than returning insertion order, so tests exercise
+        # actual similarity behaviour instead of whatever order fixtures were
+        # built in. Workspace scoping is enforced here exactly as Atlas enforces
+        # it inside the index -- before ranking, never after.
+        from knowledgedock.domain.retrieval import cosine_similarity
+
+        # Compared as strings because the ids reach this fake from two directions:
+        # a `UUID` when a use case calls it directly, and a `str` when they arrive
+        # through a JSON body. BSON does that normalisation for the real driver;
+        # a raw Python equality check would silently match nothing.
+        wanted = str(workspace_id)
+        scoped = [
+            chunk
+            for rows in self.chunks.values()
+            for chunk in rows
+            if str(chunk.get("workspace_id")) == wanted and chunk.get("embedding")
+        ]
+        ranked = sorted(
+            scoped,
+            key=lambda chunk: cosine_similarity(query_vector, list(chunk["embedding"])),
+            reverse=True,
+        )
+        return ranked[:limit]
 
 
 class UnavailableChunkRepository:
@@ -108,6 +187,17 @@ class UnavailableChunkRepository:
         raise self._error()
 
     async def count_for_document(self, document_id: UUID) -> int:
+        raise self._error()
+
+    async def vector_search(
+        self,
+        *,
+        workspace_id: UUID,
+        query_vector: list[float],
+        index_name: str,
+        limit: int,
+        num_candidates: int,
+    ) -> list[dict[str, Any]]:
         raise self._error()
 
     def _error(self) -> Exception:

@@ -768,10 +768,11 @@ class TestStatusVisibility:
         workspace = client.post("/workspaces", json={"name": "Acme"}).json()
         base = f"/workspaces/{workspace['id']}/documents"
 
-        uploaded = client.post(
-            base, files={"file": ("notes.txt", TEXT.encode(), "text/plain")}
-        ).json()
-        assert uploaded["status"] == "pending"
+        # Assert the status before indexing the body: a rejected upload then
+        # reports itself, instead of surfacing as a bare KeyError on 'status'.
+        upload = client.post(base, files={"file": ("notes.txt", TEXT.encode(), "text/plain")})
+        assert upload.status_code == 202, upload.text
+        uploaded = upload.json()
 
         seen: list[str] = []
         deadline = time.monotonic() + 20
