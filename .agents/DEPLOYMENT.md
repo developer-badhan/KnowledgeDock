@@ -110,38 +110,16 @@ mongodb+srv://knowledgedock:<db_password>@knowledgedock.xxxxx.mongodb.net/?retry
 
 ## A6. Verify it works before deploying anything
 
-```bash
-uv add motor python-dotenv
-```
-
-Create a throwaway file outside the repo, e.g. `~/check_mongo.py`:
-
-```python
-import asyncio
-import os
-
-from dotenv import load_dotenv
-from motor.motor_asyncio import AsyncIOMotorClient
-
-load_dotenv()
-
-
-async def main() -> None:
-    client = AsyncIOMotorClient(
-        os.environ["MONGODB_URI"],
-        serverSelectionTimeoutMS=8000,
-    )
-    print(await client.admin.command("ping"))
-
-
-asyncio.run(main())
-```
-
-Run it from the project root so it picks up `.env`:
+The repository ships a check for this. It reads your `.env` and uses the same
+driver the application uses, so a pass means the container path is the path the
+app will take:
 
 ```bash
-uv run python ~/check_mongo.py
+uv run python scripts/check_mongo.py
 ```
+
+Exit codes: `0` reachable, `1` connection failed, `2` a required variable is
+missing from `.env`.
 
 If it prints `{'ok': 1.0}` the credentials, network access and DNS are all
 correct. If it fails:
@@ -203,7 +181,7 @@ Open a terminal and run:
 
 ```bash
 export GEMINI_API_KEY='AIza...your-key...'
-curl -s "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$GEMINI_API_KEY" \
+curl -s "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=$GEMINI_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"contents":[{"parts":[{"text":"say OK"}]}]}'
 ```
@@ -223,11 +201,17 @@ If you get:
 Gemini's free tier (no billing enabled) allows only Flash-class models:
 
 ```text
-gemini-2.5-flash        ~10 requests/minute, ~250 requests/day
-gemini-2.5-flash-lite   ~15 requests/minute, ~1000 requests/day
-gemini-embedding-001    free
+gemini-3.8-flash        free tier, Flash class
+gemini-embedding-001    free tier
 Pro-series models       PAID ONLY since April 2026
 ```
+
+Free-tier limits are per model and Google revises them without notice. Read the
+authoritative numbers for your project at
+`https://aistudio.google.com` -> **Dashboard** -> **Usage**, and remember the
+quota is shared by every request your app makes. KnowledgeDock makes one chat
+call per question and one embedding call per batch of chunks, so budget uploads
+accordingly.
 
 Check your live quota at `https://aistudio.google.com` → **Dashboard** →
 **Usage**. Never click **Set up billing**, or the app starts costing you money
