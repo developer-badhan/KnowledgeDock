@@ -17,7 +17,11 @@
       <a href="#how-it-works" class="btn btn-primary btn-lg kd-btn-primary">
         See how it works
       </a>
+      {% if not is_production %}
       <a href="/api/docs" class="btn btn-outline-light btn-lg kd-btn-ghost">Explore the API</a>
+      {% else %}
+      <a href="/login" class="btn btn-outline-light btn-lg kd-btn-ghost">Sign in to start</a>
+      {% endif %}
     </div>
 
     <div class="kd-hero-visual reveal">
@@ -208,7 +212,11 @@
       Spin it up with Docker and start asking questions in minutes.
     </p>
     <div class="kd-hero-actions reveal">
+      {% if not is_production %}
       <a href="/api/docs" class="btn btn-primary btn-lg kd-btn-primary">Read the API docs</a>
+      {% else %}
+      <a href="/register" class="btn btn-primary btn-lg kd-btn-primary">Create an account</a>
+      {% endif %}
       <a href="#features" class="btn btn-outline-light btn-lg kd-btn-ghost">Review features</a>
     </div>
   </div>

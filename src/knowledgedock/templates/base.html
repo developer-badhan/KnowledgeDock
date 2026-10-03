@@ -41,7 +41,19 @@
           <a href="#features">Features</a>
           <a href="#how-it-works">How it works</a>
           <a href="#stack">Stack</a>
+          {% if request.state.user %}
+          <span class="kd-nav-user" title="{{ request.state.user.email }}">
+            {{ request.state.user.email }}
+          </span>
+          <form method="post" action="/ui/logout" class="d-inline">
+            <button class="kd-nav-cta kd-btn-ghost" type="submit">Sign out</button>
+          </form>
+          {% else %}
+          <a href="/login">Sign in</a>
+          {% if not is_production %}
           <a href="/api/docs" class="kd-nav-cta">API Docs</a>
+          {% endif %}
+          {% endif %}
         </div>
       </div>
     </nav>

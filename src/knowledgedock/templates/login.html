@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="kd-auth-wrap">
+  <div class="kd-card kd-auth-card">
+    <div class="kd-auth-head">
+      <span class="kd-eyebrow">Welcome back</span>
+      <h1 class="kd-auth-title">Sign in</h1>
+      <p class="kd-auth-sub">Access your workspaces and knowledge base.</p>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-danger" role="alert">{{ error }}</div>
+    {% endif %}
+    {% if registered %}
+    <div class="alert alert-success" role="alert">Account created. Sign in below.</div>
+    {% endif %}
+
+    <form method="post" action="/ui/login" novalidate>
+      <div class="mb-3">
+        <label class="form-label" for="email">Email</label>
+        <input
+          class="form-control"
+          type="email"
+          id="email"
+          name="email"
+          value="{{ email or '' }}"
+          autocomplete="email"
+          required
+          autofocus
+        />
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label" for="password">Password</label>
+        <input
+          class="form-control"
+          type="password"
+          id="password"
+          name="password"
+          autocomplete="current-password"
+          required
+        />
+      </div>
+
+      <button class="kd-btn-primary w-100" type="submit">Sign in</button>
+    </form>
+
+    <p class="kd-auth-alt">
+      No account? <a href="/register">Create one</a>
+    </p>
+  </div>
+</div>
+{% endblock %}

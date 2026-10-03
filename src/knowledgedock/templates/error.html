@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="kd-auth-wrap">
+  <div class="kd-card kd-auth-card kd-auth-card-narrow">
+    <div class="kd-auth-head">
+      <span class="kd-eyebrow">Error {{ status }}</span>
+      <h1 class="kd-auth-title">{{ message }}</h1>
+      {% if code %}
+      <p class="kd-auth-sub">Reference: <code>{{ code }}</code></p>
+      {% endif %}
+    </div>
+
+    <a class="kd-btn-primary w-100" href="/">Back to home</a>
+  </div>
+</div>
+{% endblock %}
