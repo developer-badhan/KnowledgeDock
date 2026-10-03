@@ -53,6 +53,36 @@ class TestReadiness:
         assert response.json() == {"status": "degraded", "database": "down"}
 
 
+class TestProbeAliases:
+    """Hosts configure their own probe path; a 404 there blocks the deploy.
+
+    Render polls /healthz by convention. Both spellings must answer identically.
+    """
+
+    @pytest.mark.parametrize("path", ["/health", "/healthz"])
+    def test_liveness_aliases_match(self, client: TestClient, path: str) -> None:
+        assert client.get(path).status_code == 200
+        assert client.get(path).json() == {"status": "ok"}
+
+    @pytest.mark.parametrize("path", ["/health/ready", "/readyz"])
+    def test_readiness_aliases_match(self, client: TestClient, path: str) -> None:
+        assert client.get(path).status_code == 200
+        assert client.get(path).json() == {"status": "ready", "database": "up"}
+
+    @pytest.mark.parametrize("path", ["/health/ready", "/readyz"])
+    def test_readiness_aliases_report_503_when_database_is_down(
+        self, degraded_client: TestClient, path: str
+    ) -> None:
+        assert degraded_client.get(path).status_code == 503
+
+    def test_aliases_do_not_pollute_the_schema(self, client: TestClient) -> None:
+        # Aliases exist for infrastructure probes, not for API consumers.
+        paths = client.get("/api/openapi.json").json()["paths"]
+
+        assert "/healthz" not in paths
+        assert "/readyz" not in paths
+
+
 class TestTemplates:
     def test_index_renders_through_jinja(self, client: TestClient) -> None:
         response = client.get("/")
