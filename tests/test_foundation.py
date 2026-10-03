@@ -16,6 +16,19 @@ from knowledgedock.core.config import (
 )
 
 
+class _EmptyResult:
+    deleted_count = 0
+    matched_count = 0
+    upserted_id = None
+
+
+class _EmptyCursor:
+    """A cursor that yields nothing, for the dead collections below."""
+
+    async def to_list(self, length: object = None) -> list:
+        return []
+
+
 class TestLiveness:
     def test_health_is_200_and_needs_no_database(self, client: TestClient) -> None:
         response = client.get("/health")
@@ -126,8 +139,17 @@ class TestSettingsLoading:
         assert settings.rate_limit_per_minute == 60
         assert settings.processing_max_attempts == 3
 
-    def test_comma_separated_content_types_become_a_tuple(self, settings: Settings) -> None:
-        assert settings.allowed_content_types == ("text/plain", "text/markdown")
+    def test_comma_separated_content_types_become_a_tuple(self, load_from) -> None:
+        loaded = load_from("ALLOWED_CONTENT_TYPES=text/plain, text/markdown ,application/pdf\n")
+
+        assert loaded.allowed_content_types == ("text/plain", "text/markdown", "application/pdf")
+
+    def test_every_allowlisted_type_has_an_extractor(self, settings: Settings) -> None:
+        """An accepted type with no extractor would fail later, mid-pipeline."""
+        from knowledgedock.application.ingestion.extractors import extractor_for
+
+        for content_type in settings.allowed_content_types:
+            assert extractor_for(content_type) is not None
 
     def test_env_file_overrides_code_defaults(self, load_from) -> None:
         loaded = load_from("CHUNK_SIZE=2500\nRETRIEVAL_TOP_K=12\nPORT=9000\n")
@@ -282,6 +304,24 @@ class TestProductionWiring:
 
                     async def create_index(self, *a: object, **k: object) -> str:
                         return "ok"
+
+                    async def count_documents(self, *a: object, **k: object) -> int:
+                        return 0
+
+                    def find(self, *a: object, **k: object) -> object:
+                        return _EmptyCursor()
+
+                    async def find_one_and_update(self, *a: object, **k: object) -> None:
+                        return None
+
+                    async def delete_many(self, *a: object, **k: object) -> object:
+                        return _EmptyResult()
+
+                    async def insert_many(self, *a: object, **k: object) -> None:
+                        return None
+
+                    async def list_search_indexes(self) -> object:
+                        return _EmptyCursor()
 
                 return DeadCollection()
 

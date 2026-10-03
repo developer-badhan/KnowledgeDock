@@ -132,6 +132,13 @@ class LocalFileStorage:
         except StorageError:
             return False
 
+    def open(self, relative_path: str) -> BinaryIO:
+        """Open a stored file for reading. Missing is an error, not empty text."""
+        target = self._absolute(relative_path)
+        if not target.is_file():
+            raise StorageError("The stored file is missing.")
+        return target.open("rb")
+
     def size_of(self, relative_path: str) -> int:
         try:
             return self._absolute(relative_path).stat().st_size

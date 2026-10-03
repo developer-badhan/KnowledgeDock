@@ -77,6 +77,7 @@ class Settings:
     gemini_embedding_max_input_tokens: int
     ai_timeout_seconds: float
     ai_max_retries: int
+    ai_retry_backoff_seconds: float
 
     # -- Uploads -----------------------------------------------------------
     storage_dir: Path
@@ -102,6 +103,8 @@ class Settings:
     # -- Background processing ---------------------------------------------
     processing_max_attempts: int
     processing_stale_after_minutes: int
+    processing_poll_interval_seconds: int
+    processing_enabled: bool
 
     # -- Logging -----------------------------------------------------------
     log_level: str
@@ -224,6 +227,8 @@ def load_settings(source: Any | None = None) -> Settings:
         gemini_embedding_max_input_tokens=optional("GEMINI_EMBEDDING_MAX_INPUT_TOKENS", 1800, int),
         ai_timeout_seconds=optional("AI_TIMEOUT_SECONDS", 30, float),
         ai_max_retries=optional("AI_MAX_RETRIES", 3, int),
+        # Base for exponential backoff with full jitter on provider retries.
+        ai_retry_backoff_seconds=optional("AI_RETRY_BACKOFF_SECONDS", 1.0, float),
         storage_dir=optional("STORAGE_DIR", "/tmp/knowledgedock/uploads"),
         max_upload_size_mb=optional("MAX_UPLOAD_SIZE_MB", 10, int),
         allowed_content_types=tuple(content_types or ()),
@@ -239,6 +244,13 @@ def load_settings(source: Any | None = None) -> Settings:
         rate_limit_query_per_minute=optional("RATE_LIMIT_QUERY_PER_MINUTE", 10, int),
         processing_max_attempts=optional("PROCESSING_MAX_ATTEMPTS", 3, int),
         processing_stale_after_minutes=optional("PROCESSING_STALE_AFTER_MINUTES", 30, int),
+        # How often the worker looks for PENDING documents. Render free tier has no
+        # always-on instance, so this is the latency between an upload and its
+        # first processing attempt.
+        processing_poll_interval_seconds=optional("PROCESSING_POLL_INTERVAL_SECONDS", 10, int),
+        # On by default. Disable only where ingestion cannot run, e.g. a
+        # read-only replica process.
+        processing_enabled=optional("PROCESSING_ENABLED", True, bool),
         log_level=optional("LOG_LEVEL", "INFO"),
     )
 

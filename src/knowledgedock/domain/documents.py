@@ -125,6 +125,27 @@ class Document:
             chunk_count=0,
         )
 
+    def requeue_from_interrupted(self) -> Document:
+        """Recover a document abandoned mid-processing.
+
+        Render can kill the instance while a worker holds a document, which would
+        otherwise strand it in `PROCESSING` with nothing left to move it. This is
+        distinct from `requeue()` because `PROCESSING` is not a failure state — it
+        has no error to clear — and because the attempt counter is left alone so
+        `attempts` remains an honest count of how many times work was started.
+        """
+        if self.status is not DocumentStatus.PROCESSING:
+            raise Conflict(
+                f"Only a processing document can be interrupted; this one is '{self.status}'."
+            )
+        return replace(
+            self,
+            status=DocumentStatus.PENDING,
+            updated_at=utcnow(),
+            processing_error=None,
+            chunk_count=0,
+        )
+
     def requeued_with_new_content(
         self,
         *,

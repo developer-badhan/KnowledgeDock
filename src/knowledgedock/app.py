@@ -6,6 +6,8 @@ without importing the module-level ASGI object.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import time
 import uuid
@@ -37,6 +39,7 @@ from knowledgedock.application.documents.use_cases import (
     ListDocuments,
     UploadDocument,
 )
+from knowledgedock.application.ingestion.process_document import ProcessDocument
 from knowledgedock.application.workspaces.use_cases import (
     AddMember,
     AuthorizeWorkspace,
@@ -51,7 +54,15 @@ from knowledgedock.application.workspaces.use_cases import (
 from knowledgedock.core.config import Settings, get_settings
 from knowledgedock.core.logging import configure_logging
 from knowledgedock.domain.errors import AppError, ErrorCode
+from knowledgedock.infrastructure.ai.embedding import (
+    GeminiEmbeddingProvider,
+    NullEmbeddingProvider,
+)
 from knowledgedock.infrastructure.mongo import MongoManager
+from knowledgedock.infrastructure.repositories.chunk_repository import (
+    MongoChunkRepository,
+    UnavailableChunkRepository,
+)
 from knowledgedock.infrastructure.repositories.document_repository import (
     MongoDocumentRepository,
     UnavailableDocumentRepository,
@@ -67,6 +78,8 @@ from knowledgedock.infrastructure.repositories.workspace_repository import (
 from knowledgedock.infrastructure.security.passwords import PasswordHasher
 from knowledgedock.infrastructure.security.tokens import TokenService
 from knowledgedock.infrastructure.storage import LocalFileStorage
+from knowledgedock.infrastructure.vector_index import ensure_vector_index
+from knowledgedock.workers.processor import IngestionWorker, build_worker_task
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +91,10 @@ def create_app(
     user_repository=None,
     workspace_repository=None,
     document_repository=None,
+    chunk_repository=None,
     storage=None,
+    embeddings=None,
+    processing_enabled: bool | None = None,
     hasher: PasswordHasher | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
@@ -200,11 +216,79 @@ def create_app(
         app.state.add_member = AddMember(workspaces_repo, repository, authorize)
         app.state.remove_member = RemoveMember(workspaces_repo, authorize)
 
-        await _ensure_indexes(repository, workspaces_repo, documents_repo)
+        if chunk_repository is not None:
+            chunks_repo = chunk_repository
+        elif isinstance(repository, UnavailableUserRepository):
+            chunks_repo = UnavailableChunkRepository(repository.cause)
+        else:
+            try:
+                chunks_repo = MongoChunkRepository(mongo.database())
+            except Exception as exc:  # pragma: no cover - mirrors the other paths
+                logger.error(
+                    "chunks.repository_unavailable",
+                    extra={"error": "could not reach the database at startup"},
+                    exc_info=True,
+                )
+                chunks_repo = UnavailableChunkRepository(exc)
+
+        process = ProcessDocument(
+            documents=documents_repo,
+            chunks=chunks_repo,
+            storage=file_storage,
+            embeddings=embeddings or _build_embedding_provider(settings),
+            chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
+            min_chunk_size=settings.min_chunk_size,
+            task_type=settings.gemini_embedding_task_document,
+            max_embed_tokens=settings.gemini_embedding_max_input_tokens,
+        )
+        worker = IngestionWorker(
+            documents=documents_repo,
+            process=process,
+            poll_interval_seconds=settings.processing_poll_interval_seconds,
+            max_attempts=settings.processing_max_attempts,
+            stale_after_minutes=settings.processing_stale_after_minutes,
+        )
+        app.state.ingestion_worker = worker
+        app.state.chunk_repository = chunks_repo
+
+        await _ensure_indexes(repository, workspaces_repo, documents_repo, chunks_repo)
+
+        # The vector index is created here so a fresh Atlas cluster needs no
+        # manual step. `database()` raises when there is no client at all, and
+        # index creation can fail for many reasons; neither may stop startup.
+        app.state.vector_index_ready = False
+        try:
+            app.state.vector_index_ready = await ensure_vector_index(
+                mongo.database(),
+                index_name=settings.vector_index_name,
+                dimensions=settings.gemini_embedding_dimensions,
+                similarity=settings.vector_similarity,
+            )
+        except Exception:
+            logger.error("vector_index.startup_check_failed", exc_info=True)
+
+        stop = asyncio.Event()
+        task: asyncio.Task | None = None
+        # Explicit argument wins, so tests can run the worker without a
+        # background task racing their assertions.
+        run_worker = (
+            settings.processing_enabled if processing_enabled is None else processing_enabled
+        )
+        if run_worker:
+            await worker.reclaim_abandoned()
+            task = build_worker_task(worker, stop)
 
         try:
             yield
         finally:
+            stop.set()
+            if task is not None:
+                task.cancel()
+                # Shutdown must not raise; the process is going away anyway, and a
+                # cancelled worker is the expected outcome, not a failure.
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
             await mongo.disconnect()
 
     app = FastAPI(
@@ -272,7 +356,9 @@ def create_app(
     return app
 
 
-async def _ensure_indexes(repository, workspace_repository=None, document_repository=None) -> None:
+async def _ensure_indexes(
+    repository, workspace_repository=None, document_repository=None, chunk_repository=None
+) -> None:
     """Create indexes, tolerating failure.
 
     A missing unique index would allow duplicate accounts, so the failure is
@@ -285,6 +371,8 @@ async def _ensure_indexes(repository, workspace_repository=None, document_reposi
             await workspace_repository.ensure_indexes()
         if document_repository is not None:
             await document_repository.ensure_indexes()
+        if chunk_repository is not None:
+            await chunk_repository.ensure_indexes()
     except Exception:
         logger.error(
             "mongodb.index_creation_failed",
@@ -398,4 +486,23 @@ def _error_response(
             logger.warning("error_page_render_failed", exc_info=True)
     return JSONResponse(
         status_code=status_code, content={"error": {"code": code, "message": message}}
+    )
+
+
+def _build_embedding_provider(settings: Settings):
+    """Choose the embedding implementation from configuration.
+
+    `AI_PROVIDER=null` selects the deterministic local provider, which is what
+    makes the whole ingestion pipeline runnable — and testable — without an API
+    key or any quota.
+    """
+    if settings.ai_provider == "null":
+        return NullEmbeddingProvider(dimensions=settings.gemini_embedding_dimensions)
+    return GeminiEmbeddingProvider(
+        api_key=settings.gemini_api_key,
+        model=settings.gemini_embedding_model,
+        dimensions=settings.gemini_embedding_dimensions,
+        timeout_seconds=settings.ai_timeout_seconds,
+        max_retries=settings.ai_max_retries,
+        backoff_seconds=settings.ai_retry_backoff_seconds,
     )
