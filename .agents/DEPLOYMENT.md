@@ -310,6 +310,8 @@ openssl rand -base64 48
 
 1. Scroll to **Advanced**.
 2. **Health Check Path**: `/health`
+   (`/healthz` answers identically — the app serves both — but `/health` is
+   the name used everywhere else in this project.)
 3. Make sure **Docker Command** is **empty**. The `CMD` in the Dockerfile is
    used. If you set it, the exact value is:
    `sh -c "uvicorn knowledgedock.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"`
