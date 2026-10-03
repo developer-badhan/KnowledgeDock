@@ -12,7 +12,7 @@ Deployment setup (Atlas / Gemini / Render): `.agents/DEPLOYMENT.md`
 ```text
 Phase 01 Foundation          [x]  8/8
 Phase 02 Authentication      [x]  6/6
-Phase 03 Workspaces          [ ]  0/6
+Phase 03 Workspaces          [x]  6/6
 Phase 04 Documents           [ ]  0/6
 Phase 05 Ingestion           [ ]  0/7
 Phase 06 Retrieval           [ ]  0/6
@@ -21,7 +21,7 @@ Phase 08 Reliability         [ ]  0/8
 Phase 09 Frontend            [ ]  0/6
 Phase 10 Production Readiness [ ]  0/9
 
-Overall: [███░░░░░░░░░░░░░░░░░░░░░░░░░░░] 21% (14/66)
+Overall: [████░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 30% (20/66)
 ```
 
 Legend: `[ ]` not started · `[x]` complete
@@ -213,14 +213,85 @@ Branch: `phase-03-workspaces`
 
 Scope: workspace creation, membership/access, workspace isolation.
 
-- [ ] `workspaces` collection model + `owner_id` index
-- [ ] `POST /workspaces` — create workspace for authenticated user
-- [ ] `GET /workspaces` / `GET /workspaces/{id}` — access-checked reads
-- [ ] `workspace_members` collection + role model (owner/member)
-- [ ] Membership endpoints (invite/add, list, remove)
-- [ ] Workspace access dependency enforcing isolation on every protected op
+- [x] `workspaces` collection model + `owner_id` index
+- [x] `POST /workspaces` — create workspace for authenticated user
+- [x] `GET /workspaces` / `GET /workspaces/{id}` — access-checked reads
+- [x] `workspace_members` collection + role model (owner/member)
+- [x] Membership endpoints (invite/add, list, remove)
+- [x] Workspace access dependency enforcing isolation on every protected op
 
-Notes:
+### The isolation gate
+
+`AuthorizeWorkspace` is the single place "does this user belong here" is
+answered. Routes receive a `WorkspaceAccess`, which cannot be constructed without
+a membership row having been read, so a handler cannot skip the check — the
+route does not run without it. Phases 4–7 depend on this rather than
+re-deriving access.
+
+```text
+require_workspace_access
+    └── get_current_user          401 before the workspace is even looked up
+        └── AuthorizeWorkspace    reads workspace_members for (workspace, user)
+            └── WorkspaceAccess   {workspace_id, user_id, role}
+```
+
+### Two tiers of refusal
+
+| Caller | Response | Reasoning |
+|---|---|---|
+| Not a member | **404** | A 403 would confirm the workspace exists, letting anyone enumerate workspace ids. 404 makes "not yours" and "does not exist" identical — verified by asserting the two responses match byte for byte. |
+| Member, wrong role | **403** | A member already knows the workspace exists, so there is nothing left to hide. |
+
+A non-member attempting to add themselves to a workspace gets 404, not 403; a
+member attempting the same gets 403. Both paths are tested.
+
+### Rules that were designed, not defaulted
+
+| Rule | Reason |
+|---|---|
+| Owner row is written with the workspace, in one call | A workspace must never exist with no owner row, which would make it invisible to everyone including its creator. |
+| Owner cannot be removed or leave | Removing them orphans every document. Transferring ownership is a separate, explicit operation, not implied here. |
+| A member may remove only themselves | Otherwise any member could evict anyone. |
+| Deleted workspace deletes membership rows too | An orphaned row would still appear in someone's dashboard. |
+| Listing joins `workspace_members` → `workspaces` instead of denormalising | A `workspace_ids` array on the user would save a round trip but becomes a second source of truth that drifts. Two indexed reads on M0's 100 ops/sec is cheaper than that class of bug. |
+| Unique `(workspace_id, user_id)` index | Double-add is impossible, not merely unlikely. |
+| Members are added by email, no pending invite | A pending invitation must be delivered, and Phase 2 declined to add a mail provider. Rejecting unknown addresses is an enumeration vector, but only to someone already inside the workspace. |
+| Workspace collection created without one | Zero workspaces is a valid state and Phase 9 renders an empty state for it. |
+
+### Verification
+
+**155 tests pass** (109 previous + 46 new). `ruff check` and `ruff format` clean.
+
+Covered: creation and name validation, listing only what you belong to, the full
+isolation matrix (read, rename, delete, list members, self-add, remove-member),
+role enforcement, member lifecycle (add, leave, duplicate, unknown email),
+`401` on all eight routes when anonymous, `422` on malformed ids, owner
+invariants, and outage behaviour.
+
+One test deserves naming: a removed member's session cookie is still
+cryptographically valid, yet their workspace access is refused. That proves the
+check runs per request rather than trusting what was true when the token was
+issued.
+
+**Verified against real Atlas:**
+
+```text
+indexes      workspaces_owner, members_workspace_user_unique (unique), members_user
+duplicate member blocked by the unique index
+list_for_user owner -> [('smoke-ws','owner')]  member -> [('smoke-ws','member')]
+delete       -> 204, and 0 orphaned membership rows remain
+```
+
+**One bug the in-memory double hid.** `rename` used `find_one_and_update`
+without `return_document`, and PyMongo defaults to `ReturnDocument.BEFORE` — so
+the route returned the document as it was *before* the rename. `PATCH
+/workspaces/{id}` would have echoed the old name and looked like a no-op. The
+double was hand-written and therefore agreed with the expectation.
+`TestMongoRepositorySemantics` now pins it against a collection that honours
+PyMongo's default.
+
+Notes: no workspace UI yet. Phase 4 needs only the API, and Phase 9 owns the
+dashboard, switcher and member management screens.
 
 ---
 
@@ -402,3 +473,11 @@ Roadmap updated
 | 20 | 02 | Both `/auth/*` (JSON) and `/ui/*` (HTML) routes call the same use case objects | HTMX posts forms while API consumers post JSON. Duplicating the rules would let the two surfaces disagree about what a valid registration is. Two thin routes, one use case. Phase 9 replaces the `/ui` handlers with the real screens. |
 | 21 | 02 | Database errors become `503 service_unavailable`, never `401` | `MongoManager.connect()` does not raise by design (Phase 01 decision 2), so an Atlas outage leaves the client object present and the failure appears later as a `ServerSelectionTimeoutError` on a query. Unhandled, that is a 500. Worse, inside login it would sit right next to the credential check, so an outage could plausibly be reported to the user as 'incorrect email or password'. |
 | 22 | 02 | Every auth route was verified against real Atlas, not only the in-memory double | The double hid three startup-only bugs, including one that made the production boot path raise. `tests/conftest.py` now keeps a `FakeDatabase` and an ordering-checking `FakeMongoManager` so the production object graph is constructed in tests too. |
+| 23 | 03 | One isolation gate, `AuthorizeWorkspace`, returning `WorkspaceAccess` | SKILL.md §6 requires three checks on every protected operation. Doing them per route would mean forty ways to get it subtly wrong across phases 4-7. Handing handlers a `WorkspaceAccess` value makes the check structural: the route cannot execute without it, and the value cannot be constructed without reading `workspace_members`. |
+| 24 | 03 | Non-membership returns 404, not 403 | A 403 confirms the workspace exists, so any authenticated user could enumerate workspace identifiers by probing the difference between 403 and 404. A member already knows the workspace exists, so there is nothing left to hide and 403 is correct there. The test asserts a non-member's response and a fabricated id's response are identical. |
+| 25 | 03 | Membership is a join, not a denormalised array on the user | Storing `workspace_ids` on the user document would save one round trip on every list. It also creates a second source of truth that drifts the moment a member is removed or a workspace is deleted, and the drift is silent. Atlas M0 allows 100 ops/sec; two indexed reads is cheaper than that bug class. |
+| 26 | 03 | Add-by-email with no pending invite state | The roadmap said 'invite/add'. A pending invitation has to be delivered, which needs a mail provider, and Phase 2 explicitly declined to invent one. So membership is granted directly and only for an address that already has an account. Pending invites plus an expiry and a resolution path would roughly double this phase for a portfolio project with no way to send mail. |
+| 27 | 03 | The owner cannot be removed and cannot leave | Removing them leaves every document in the workspace with nobody able to delete or transfer it. Ownership transfer is a real feature and is deliberately not implied here, because 'promote someone else' is an explicit decision that should not happen as a side effect of a removal. |
+| 28 | 03 | Workspace creation writes the workspace and its owner row together | Two separate writes leave a window where the workspace exists with no owner row, making it invisible to everyone including its creator. The insert is rolled back if the membership write fails. |
+| 29 | 03 | Deleted workspaces delete their membership rows | Otherwise an orphaned `workspace_members` row still matches `list_for_user`, so the deleted workspace keeps appearing in that person's dashboard. Confirmed against Atlas: 0 rows remain after delete. |
+| 30 | 03 | `rename` uses `return_document=ReturnDocument.AFTER` | PyMongo's `find_one_and_update` defaults to BEFORE. Without this the route returns the pre-update document and the rename appears to do nothing. The hand-written test double agreed with the expectation instead of the driver, so only a real cluster exposed it. There is now a test using a collection that honours PyMongo's default. |
