@@ -21,7 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from knowledgedock.domain.workspaces import WorkspaceRole
-from tests.conftest import Actor, make_actor, workspace_of
+from tests.conftest import Actor, assert_hidden_from_outsider, make_actor, workspace_of
 
 PASSWORD = "a-perfectly-fine-password"
 
@@ -569,3 +569,66 @@ class TestMongoRepositorySemantics:
 
         unique_on_members = [c for c in calls if len(c[0]) == 2 and c[1].get("unique")]
         assert unique_on_members, "membership uniqueness must be enforced by an index"
+
+
+class TestRefusalIsOpaque:
+    """The house rule, stated once and applied to every workspace route.
+
+    KnowledgeDock has one access boundary: the workspace. Everyone inside it can
+    see everything, so there is a single refusal for a resource you cannot reach,
+    and it must be indistinguishable from the resource never having existed.
+    Phase 4's document routes inherit this by depending on
+    `require_workspace_access` and by querying on `(id, workspace_id)` together.
+    """
+
+    @pytest.mark.parametrize(
+        ("method", "path", "body"),
+        [
+            ("GET", "/workspaces/{ws}", None),
+            ("PATCH", "/workspaces/{ws}", {"name": "Renamed"}),
+            ("DELETE", "/workspaces/{ws}", None),
+            ("GET", "/workspaces/{ws}/members", None),
+            ("POST", "/workspaces/{ws}/members", {"email": "someone@example.com"}),
+            ("DELETE", "/workspaces/{ws}/members/{user}", None),
+        ],
+    )
+    def test_outsider_and_absent_id_are_indistinguishable(
+        self, actor, method: str, path: str, body
+    ) -> None:
+        owner = actor("boss")
+        outsider = actor("stranger")
+        secret = workspace_of(owner.client, "Private Plans")
+
+        def call(target: str):
+            request = getattr(outsider.client, method.lower())
+            return (
+                request(path.format(ws=target, user=owner.user_id), json=body)
+                if body is not None
+                else request(path.format(ws=target, user=owner.user_id))
+            )
+
+        real = call(secret["id"])
+        missing = call(str(uuid.uuid4()))
+
+        assert_hidden_from_outsider(real, missing, f"{method} {path}")
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/workspaces/{ws}",
+            "/workspaces/{ws}/members",
+        ],
+    )
+    def test_member_also_gets_404_for_another_workspaces_resources(self, actor, path: str) -> None:
+        """Two members of *different* workspaces are still outsiders to each other."""
+        a = actor("a")
+        b = actor("b")
+        shared_a = workspace_of(a.client, "A's space")
+        shared_b = workspace_of(b.client, "B's space")
+
+        # Each is a member somewhere, which changes nothing for the other's space.
+        for actor_ref, own, foreign in ((a, shared_a, shared_b), (b, shared_b, shared_a)):
+            assert actor_ref.client.get(path.format(ws=foreign["id"])).status_code == 404, (
+                "membership elsewhere must not grant access here"
+            )
+            assert actor_ref.client.get(path.format(ws=own["id"])).status_code == 200

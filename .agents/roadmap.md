@@ -13,7 +13,7 @@ Deployment setup (Atlas / Gemini / Render): `.agents/DEPLOYMENT.md`
 Phase 01 Foundation          [x]  8/8
 Phase 02 Authentication      [x]  6/6
 Phase 03 Workspaces          [x]  6/6
-Phase 04 Documents           [ ]  0/6
+Phase 04 Documents           [ ]  0/7
 Phase 05 Ingestion           [ ]  0/7
 Phase 06 Retrieval           [ ]  0/6
 Phase 07 RAG                 [ ]  0/7
@@ -21,7 +21,7 @@ Phase 08 Reliability         [ ]  0/8
 Phase 09 Frontend            [ ]  0/6
 Phase 10 Production Readiness [ ]  0/9
 
-Overall: [████░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 30% (20/66)
+Overall: [████░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 30% (20/67)
 ```
 
 Legend: `[ ]` not started · `[x]` complete
@@ -126,7 +126,7 @@ Notes:
 
 Branch: `phase-02-authentication`
 
-Scope: user model, registration, login, authentication, authorization.
+Scope: upload, validation, metadata, processing status. See README §18 Phase 4 and SKILL.md §7–§9.
 
 - [x] `users` collection model + unique index on `email`
 - [x] `POST /auth/register` — validation, duplicate detection, password hashing
@@ -297,17 +297,72 @@ dashboard, switcher and member management screens.
 
 ## Phase 04 — Documents
 
-Branch: `phase-04-documents`
+**Settled contract — decided before any code was written. Do not re-litigate.**
 
-Scope: upload, validation, metadata, processing status.
+### The access model
+
+The workspace is the *only* access boundary. There is no per-document
+permission, and the uploader is not part of any access check.
+
+```text
+caller is a member of the document's workspace  ->  200, always
+caller is not a member                          ->  404
+document does not exist                         ->  404
+```
+
+| Case | Response | Reasoning |
+|---|---|---|
+| Same-workspace member, did not upload it | **200** | They are inside the boundary. Uploader is irrelevant. |
+| Not a member of the document's workspace | **404** | A 403 confirms the document exists, leaking existence across tenants. With UUIDs the guessing risk is small, but 404 costs nothing and keeps the boundary consistent. |
+| Document id does not exist | **404** | Byte-identical to the previous case. Indistinguishable to the caller. |
+
+403 is reserved for **intra-workspace** permissions — private documents, or
+viewer vs. editor roles — which do not exist yet. If they are ever added, 403 on
+a specific document is reasonable, since a member already knows the workspace
+exists.
+
+### Route shape: nested under the workspace
+
+```text
+GET    /workspaces/{workspace_id}/documents
+POST   /workspaces/{workspace_id}/documents
+GET    /workspaces/{workspace_id}/documents/{document_id}
+DELETE /workspaces/{workspace_id}/documents/{document_id}
+```
+
+Nesting is required, not stylistic. `require_workspace_access` reads
+`workspace_id` from the path, so it can only run as a dependency if the workspace
+is in the path. A flat `GET /documents/{id}` would have nowhere to resolve
+membership from, pushing the check into the use case where a future endpoint
+could forget it. Nesting preserves the structural guarantee that a handler
+cannot execute without the isolation check having passed.
+
+### Repository scoping — mandatory
+
+Every document query filters on **both** identifiers:
+
+```python
+{"_id": document_id, "workspace_id": workspace_id}
+```
+
+Not `{"_id": ...}` followed by a comparison. Two reasons:
+
+1. A document that exists in a *different* workspace must produce the same 404,
+   and take the same code path, as one that does not exist at all. A
+   fetch-then-compare would let the two diverge in status code or timing.
+2. It is a single `_id` lookup with an added filter, so the scoping is free.
+
+### Checklist
 
 - [ ] `documents` collection model with explicit status enum (PENDING/PROCESSING/READY/FAILED)
 - [ ] Local file storage adapter (temp dir, later S3-compatible) + content hashing
-- [ ] `POST /documents` upload — content-type allowlist, size limit, workspace check, 202 response
+- [ ] `POST /workspaces/{id}/documents` — content-type allowlist, size limit, 202 response
 - [ ] Explicit state-transition guard (client cannot set status)
-- [ ] `GET /documents` — paginated, workspace-filtered list
-- [ ] `GET /documents/{id}` — status, `processing_error`, chunk count
-- [ ] `DELETE /documents/{id}` — soft delete + chunk cleanup
+- [ ] `GET /workspaces/{id}/documents` — paginated, workspace-filtered list
+- [ ] `GET /workspaces/{id}/documents/{id}` — status, `processing_error`, chunk count
+- [ ] `DELETE /workspaces/{id}/documents/{id}` — soft delete + chunk cleanup
+
+Scope: upload, validation, metadata, processing status. See README §18 Phase 4 and SKILL.md §7–§9.
 
 Notes:
 
@@ -481,3 +536,7 @@ Roadmap updated
 | 28 | 03 | Workspace creation writes the workspace and its owner row together | Two separate writes leave a window where the workspace exists with no owner row, making it invisible to everyone including its creator. The insert is rolled back if the membership write fails. |
 | 29 | 03 | Deleted workspaces delete their membership rows | Otherwise an orphaned `workspace_members` row still matches `list_for_user`, so the deleted workspace keeps appearing in that person's dashboard. Confirmed against Atlas: 0 rows remain after delete. |
 | 30 | 03 | `rename` uses `return_document=ReturnDocument.AFTER` | PyMongo's `find_one_and_update` defaults to BEFORE. Without this the route returns the pre-update document and the rename appears to do nothing. The hand-written test double agreed with the expectation instead of the driver, so only a real cluster exposed it. There is now a test using a collection that honours PyMongo's default. |
+| 31 | 03/04 | The workspace is the only access boundary; there is no per-document permission | Every member of a workspace can see every document in it, and the uploader is irrelevant to access. This is the simplest model that satisfies README §6 and SKILL.md §6, and it keeps a single authorization concept in the whole system. A per-document permission model would need its own entity, its own endpoints and its own tests, for a portfolio project whose requirements never mention it. Revisit only if a requirement actually asks for private documents. |
+| 32 | 03/04 | Non-members get 404, and the response is byte-identical to a missing resource | A 403 answers 'this exists but is not yours', which leaks existence across tenants. 404 makes 'not yours' and 'does not exist' the same response. Verified across all six workspace routes by comparing the two bodies, not just the status codes. This is the guard Phase 4 inherits. |
+| 33 | 04 | Document routes are nested under the workspace | `require_workspace_access` resolves membership from a path parameter, so the workspace has to be in the path for the check to run as a dependency. A flat `/documents/{id}` would move the check into the use case, where a future endpoint could omit it. Nesting keeps 'a handler cannot execute without the isolation check' structurally true. |
+| 34 | 04 | Document queries filter on `(id, workspace_id)` together | A document in another workspace must take the same code path as one that does not exist, so the two cannot diverge in status code or response timing. Querying both fields in one `_id` lookup also makes the scoping free rather than a second step that could be forgotten. |

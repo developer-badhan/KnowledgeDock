@@ -274,3 +274,23 @@ def workspace_of(client: TestClient, name: str = "Acme") -> dict:
     response = client.post("/workspaces", json={"name": name})
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def assert_hidden_from_outsider(real: object, missing: object, label: str) -> None:
+    """Assert a refusal is indistinguishable from the resource not existing.
+
+    The workspace boundary is the only access control in KnowledgeDock: every
+    member of a workspace can see everything in it, and the uploader is
+    irrelevant. So there is exactly one refusal for a resource you cannot reach —
+    404 — and it must be indistinguishable from a 404 for an id that never
+    existed.
+
+    A 403, or a 404 with a different body, would confirm the resource exists and
+    leak existence across tenants. Both responses are compared, not just the
+    status code.
+    """
+    assert real.status_code == 404, f"{label}: expected 404, got {real.status_code}"
+    assert missing.status_code == 404, f"{label}: expected 404 for absent id"
+    assert real.json() == missing.json(), (
+        f"{label}: a refusal must be byte-identical to the absent-resource response"
+    )
