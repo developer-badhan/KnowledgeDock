@@ -20,6 +20,7 @@ dependencies = [
     "python-multipart>=0.0.12",
     "python-dotenv>=1.0.0",
     "python-decouple>=3.8",
+    "motor>=3.7.1",
 ]
 
 [dependency-groups]

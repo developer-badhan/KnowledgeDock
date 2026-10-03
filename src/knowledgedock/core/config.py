@@ -212,7 +212,7 @@ def load_settings(source: Any | None = None) -> Settings:
         ),
         ai_provider=required("AI_PROVIDER"),
         gemini_api_key=required("GEMINI_API_KEY"),
-        gemini_chat_model=optional("GEMINI_CHAT_MODEL", "gemini-2.5-flash"),
+        gemini_chat_model=optional("GEMINI_CHAT_MODEL", "gemini-3.8-flash"),
         gemini_temperature=optional("GEMINI_TEMPERATURE", 0.0, float),
         gemini_max_output_tokens=optional("GEMINI_MAX_OUTPUT_TOKENS", 800, int),
         gemini_embedding_model=optional("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001"),
