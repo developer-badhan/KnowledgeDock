@@ -11,7 +11,7 @@ Deployment setup (Atlas / Gemini / Render): `.agents/DEPLOYMENT.md`
 
 ```text
 Phase 01 Foundation          [x]  8/8
-Phase 02 Authentication      [ ]  0/6
+Phase 02 Authentication      [x]  6/6
 Phase 03 Workspaces          [ ]  0/6
 Phase 04 Documents           [ ]  0/6
 Phase 05 Ingestion           [ ]  0/7
@@ -21,7 +21,7 @@ Phase 08 Reliability         [ ]  0/8
 Phase 09 Frontend            [ ]  0/6
 Phase 10 Production Readiness [ ]  0/9
 
-Overall: [██░░░░░░░░░░░░░░░░░░░░░░░░░░░] 12% (8/66)
+Overall: [███░░░░░░░░░░░░░░░░░░░░░░░░░░░] 21% (14/66)
 ```
 
 Legend: `[ ]` not started · `[x]` complete
@@ -128,14 +128,82 @@ Branch: `phase-02-authentication`
 
 Scope: user model, registration, login, authentication, authorization.
 
-- [ ] `users` collection model + unique index on `email`
-- [ ] `POST /auth/register` — validation, duplicate detection, password hashing
-- [ ] `POST /auth/login` — credential verification, controlled failure responses
-- [ ] JWT access token issue + `auth` dependency for protected routes
-- [ ] Current-user resolution dependency (`get_current_user`)
-- [ ] Password reset flow (request token → set new password)
+- [x] `users` collection model + unique index on `email`
+- [x] `POST /auth/register` — validation, duplicate detection, password hashing
+- [x] `POST /auth/login` — credential verification, controlled failure responses
+- [x] JWT access token issue + `auth` dependency for protected routes
+- [x] Current-user resolution dependency (`get_current_user`)
+- [x] Password reset flow (request token → set new password)
 
-Notes:
+### Layering
+
+```text
+api/auth.py                 routes only: take input, call one use case, shape output
+api/dependencies.py         cookie handling + get_current_user
+application/auth/           business rules: policies (email, password), use cases
+domain/users.py             User + PasswordResetToken entities, session_version
+domain/errors.py            typed errors -> HTTP status + stable code
+infrastructure/             argon2id, PyJWT, MongoUserRepository (+ in-memory double)
+```
+
+### Behaviour that was designed, not defaulted
+
+| Rule | Why it exists |
+|---|---|
+| Login returns identical status, body and work for unknown address and wrong password | Otherwise the endpoint enumerates accounts. Verified by test, including a timing comparison. |
+| Argon2id cost pinned in code (19 MiB), not in `.env` | Meaningful only relative to hardware. Render free tier has 512 MB; the 64 MiB default would be a quarter of the container for one login. |
+| Password length capped at 128 | An unbounded input is free CPU denial of service against the hasher, from an unauthenticated caller. |
+| `session_version` column, bumped on every password change | Makes stateless JWTs revocable. A bare token cannot express "log this user out everywhere". |
+| Reset tokens stored as SHA-256 digests | Read access to the database must not yield a usable reset link. |
+| Reset token consumed with `find_one_and_delete` | Single use even if two requests race. |
+| TTL index on `expires_at` | MongoDB purges spent tokens. No sweeper job. |
+| Response to a reset request is byte-identical for known and unknown addresses | Returning the token for a known address made it an oracle. Caught by a test during this phase. |
+| Unique index is the authority for duplicate email; the pre-check is an optimisation | Two simultaneous registrations both pass a pre-check. |
+| Cookie is `HttpOnly`, `SameSite=Lax`, `Secure` in production only | No token reachable from JS; a `Secure` cookie would never be sent over local HTTP. |
+
+### Verification
+
+**109 tests pass** (38 foundation + 71 auth). `ruff check` and `ruff format`
+clean.
+
+Covered: registration and duplicates, email normalisation, password policy,
+argon2id storage, login and failure modes, enumeration (status, body, timing),
+cookie flags, `Authorization: Bearer` as a second access path, session
+revocation, reset request/confirm/expiry/single-use/re-request, the HTML form
+surface, and the error contract (stable shape, no traceback, HTML vs JSON).
+
+**Verified against the real Atlas cluster**, not only the in-memory double:
+
+```text
+register 201 | duplicate 409 | UPPERCASE duplicate 409
+login 200 with HttpOnly cookie | me 200 | nav shows session
+wrong password 401 | unknown account 401 | logout 200 | me 401
+form register 303 | form login 303
+Atlas row: argon2id hash, no plaintext, session_version 1, _id is a UUID
+```
+
+### Three bugs the test doubles could not find
+
+All three were found by running against real Atlas, which is the argument for
+doing that rather than trusting mocks:
+
+1. **PyMongo refuses to encode a native `uuid.UUID`** under its default
+   `UuidRepresentation.UNSPECIFIED`. Fixed with `uuidRepresentation="standard"`
+   on the client.
+2. **`find_one()` returns an awaitable.** Passing it into another coroutine
+   produced a document that was actually a coroutine, failing as a confusing
+   subscript error. `_as_user` is now a plain function.
+3. **The production startup path was broken.** The repository was constructed
+   before `mongo.connect()`, so `database()` raised on every real boot. Tests
+   injected a repository and never executed that line. The app also now maps
+   `PyMongoError` to `503 service_unavailable`, because with a non-raising
+   `connect()` an Atlas outage otherwise surfaces as an unhandled 500 — and must
+   never be reported to the user as "incorrect email or password".
+
+Notes: cookie-based sessions. The `Authorization: Bearer` path is accepted too so
+API consumers are not forced through a browser cookie jar; the cookie wins when
+both are present. Minimal login/register/error templates were added because
+cookie auth is not demonstrable without them — Phase 9 owns the real screens.
 
 ---
 
@@ -328,3 +396,9 @@ Roadmap updated
 | 14 | 01 | Connectivity check lives in `scripts/check_mongo.py`, outside `src/` | It is a developer tool, not application code. The Dockerfile copies only `src/`, so it never reaches the image, and `.dockerignore` keeps it out of the build context too. |
 | 15 | 01 | Atlas and Render are both in Oregon (`us-west-2`) | Colocation keeps every Mongo round trip inside the same region. This matters more than usual here: `$vectorSearch` runs as an aggregation pipeline, so a retrieval is several round trips, and M0 is limited to 100 ops/sec. A cross-region deployment would put an ocean between the API and the database on every question. |
 | 16 | 01 | Serve `/healthz` and `/readyz` as aliases of `/health` and `/health/ready` | A deploy sat in `In progress` for 10+ minutes with a healthy container because the host polled `/healthz` and got a 404 every 10 seconds. Infrastructure probe paths are configured per host, so the app answers both spellings rather than depending on one being chosen correctly. The aliases are hidden from the OpenAPI schema — they are for probes, not API consumers. |
+| 17 | 02 | Session travels in an `HttpOnly` cookie; `Authorization: Bearer` accepted as a second path | Chosen because the UI is server-rendered HTMX, so no token handling is needed in JavaScript. The bearer path is still accepted so an API-first product is not forced through a browser cookie jar, and one token service serves both. `Secure` follows the environment: required over HTTPS, and it would simply never be sent over local HTTP. |
+| 18 | 02 | `session_version` column on the user, compared on every authenticated request | A JWT is stateless and therefore cannot be revoked, which is unacceptable when a password changes. The token carries the version it was minted with; a password change increments the stored value, so every existing token stops validating. This is how the app logs a user out everywhere without server-side session storage. |
+| 19 | 02 | Reset link is written to the log in development, never returned by the API | There is no mail provider and `SKILL.md` §3 forbids adding one speculatively. Returning the token in the response was the obvious shortcut and it was wrong: the response then differed for known and unknown addresses, turning the endpoint into an enumeration oracle. A test caught it. Production logs a `delivery: UNCONFIGURED` marker so the gap is visible instead of silently swallowing resets. |
+| 20 | 02 | Both `/auth/*` (JSON) and `/ui/*` (HTML) routes call the same use case objects | HTMX posts forms while API consumers post JSON. Duplicating the rules would let the two surfaces disagree about what a valid registration is. Two thin routes, one use case. Phase 9 replaces the `/ui` handlers with the real screens. |
+| 21 | 02 | Database errors become `503 service_unavailable`, never `401` | `MongoManager.connect()` does not raise by design (Phase 01 decision 2), so an Atlas outage leaves the client object present and the failure appears later as a `ServerSelectionTimeoutError` on a query. Unhandled, that is a 500. Worse, inside login it would sit right next to the credential check, so an outage could plausibly be reported to the user as 'incorrect email or password'. |
+| 22 | 02 | Every auth route was verified against real Atlas, not only the in-memory double | The double hid three startup-only bugs, including one that made the production boot path raise. `tests/conftest.py` now keeps a `FakeDatabase` and an ordering-checking `FakeMongoManager` so the production object graph is constructed in tests too. |

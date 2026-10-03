@@ -2,9 +2,9 @@
 
 Settings are read through `python-decouple` from a throwaway `.env` file, so the
 developer's real `.env` is never touched. MongoDB is replaced through the
-`mongo_manager` seam on `create_app`: these tests verify the HTTP contract and
-configuration loading, not Atlas connectivity (the deployment smoke test covers
-that).
+`mongo_manager` seam on `create_app`, and the user repository is replaced with
+its in-memory double, so the whole suite runs without a database. These tests
+verify HTTP contract and configuration; the deployment smoke test covers Atlas.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from knowledgedock.app import create_app
 from knowledgedock.core.config import Settings, load_settings
+from knowledgedock.infrastructure.repositories.user_repository import InMemoryUserRepository
 
 BASE_ENV = """\
 ENVIRONMENT=test
@@ -55,24 +56,61 @@ def _isolate_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-class FakeMongoManager:
-    """Stands in for MongoManager so tests run without a live database."""
+class FakeDatabase:
+    """Minimal stand-in for an `AsyncDatabase`, enough to construct a repository.
 
-    def __init__(self, *, reachable: bool = True) -> None:
+    Nothing here executes queries. Its job is to let a test build the *production*
+    object graph so the wiring is exercised rather than bypassed.
+    """
+
+    def __getitem__(self, name: str) -> Any:
+        return _FakeCollection(name)
+
+
+class _FakeCollection:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    async def create_index(self, *args: Any, **kwargs: Any) -> str:
+        return f"{self.name}_index"
+
+
+class FakeMongoManager:
+    """Stands in for MongoManager so tests run without a live database.
+
+    `database()` mirrors the real one: it raises until `connect()` has run, and
+    records the ordering. That constraint is what caught the startup bug where the
+    user repository was constructed before the client existed.
+    """
+
+    def __init__(
+        self,
+        *,
+        reachable: bool = True,
+        connected: bool = True,
+        database: FakeDatabase | None = None,
+    ) -> None:
         self.reachable = reachable
-        self.connected = False
+        self._connected = connected
+        self._database = database if database is not None else FakeDatabase()
+        self.connect_called = False
+        self.database_called_after_connect = False
 
     async def ping(self) -> bool:
         return self.reachable
 
     async def connect(self) -> None:
-        self.connected = True
+        self.connect_called = True
+        self._connected = True
 
     async def disconnect(self) -> None:
-        self.connected = False
+        self._connected = False
 
-    def database(self) -> Any:  # pragma: no cover - not used in phase 1
-        raise NotImplementedError
+    def database(self) -> Any:
+        if not self._connected:
+            raise RuntimeError("MongoDB is not connected; call connect() during startup")
+        self.database_called_after_connect = self.connect_called
+        return self._database
 
 
 @pytest.fixture
@@ -84,6 +122,7 @@ def env_file(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def settings(env_file: Path) -> Settings:
+    # _env_file=None keeps the developer's real .env out of the test run.
     return load_settings(Config(RepositoryEnv(str(env_file))))
 
 
@@ -101,17 +140,47 @@ def load_from(tmp_path: Path):
     return _load
 
 
-def _client(settings: Settings, *, reachable: bool) -> Iterator[TestClient]:
-    app = create_app(settings, mongo_manager=FakeMongoManager(reachable=reachable))
+@pytest.fixture
+def users() -> InMemoryUserRepository:
+    return InMemoryUserRepository()
+
+
+def _client(
+    settings: Settings,
+    *,
+    reachable: bool = True,
+    users: InMemoryUserRepository | None = None,
+) -> Iterator[TestClient]:
+    app = create_app(
+        settings,
+        mongo_manager=FakeMongoManager(reachable=reachable),
+        user_repository=users if users is not None else InMemoryUserRepository(),
+    )
     with TestClient(app) as test_client:
+        test_client.users = app.state.register_user._repository  # type: ignore[attr-defined]
         yield test_client
 
 
 @pytest.fixture
-def client(settings: Settings) -> Iterator[TestClient]:
-    yield from _client(settings, reachable=True)
+def client(settings: Settings, users: InMemoryUserRepository) -> Iterator[TestClient]:
+    yield from _client(settings, users=users)
 
 
 @pytest.fixture
 def degraded_client(settings: Settings) -> Iterator[TestClient]:
     yield from _client(settings, reachable=False)
+
+
+@pytest.fixture
+def production_client(settings: Settings) -> Iterator[TestClient]:
+    """A client running with ENVIRONMENT=production."""
+    import dataclasses
+
+    prod = dataclasses.replace(settings, environment="production")
+    app = create_app(
+        prod,
+        mongo_manager=FakeMongoManager(),
+        user_repository=InMemoryUserRepository(),
+    )
+    with TestClient(app) as test_client:
+        yield test_client

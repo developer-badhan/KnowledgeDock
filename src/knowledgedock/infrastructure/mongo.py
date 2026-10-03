@@ -31,6 +31,12 @@ class MongoManager:
             self._settings.mongodb_uri,
             serverSelectionTimeoutMS=self._settings.mongodb_server_selection_timeout_ms,
             appname="knowledgedock",
+            # PyMongo defaults to UuidRepresentation.UNSPECIFIED and then refuses
+            # to encode a native uuid.UUID at all, raising
+            # "cannot encode native uuid.UUID". "standard" stores UUIDs as BSON
+            # binary subtype 4 and reads them back as uuid.UUID, so domain code
+            # can keep using real UUIDs. Verified against Atlas, not just mocked.
+            uuidRepresentation="standard",
         )
         if await self.ping():
             logger.info(

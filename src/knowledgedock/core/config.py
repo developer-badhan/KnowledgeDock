@@ -57,6 +57,7 @@ class Settings:
     secret_key: str
     jwt_expire_minutes: int
     password_min_length: int
+    password_reset_expire_minutes: int
 
     # -- Database ----------------------------------------------------------
     mongodb_uri: str
@@ -205,6 +206,7 @@ def load_settings(source: Any | None = None) -> Settings:
         secret_key=required("SECRET_KEY"),
         jwt_expire_minutes=optional("JWT_EXPIRE_MINUTES", 60, int),
         password_min_length=optional("PASSWORD_MIN_LENGTH", 8, int),
+        password_reset_expire_minutes=optional("PASSWORD_RESET_EXPIRE_MINUTES", 30, int),
         mongodb_uri=required("MONGODB_URI"),
         mongodb_db=optional("MONGODB_DB", "knowledgedock"),
         mongodb_server_selection_timeout_ms=optional(

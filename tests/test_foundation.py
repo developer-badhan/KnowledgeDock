@@ -208,3 +208,121 @@ class TestSettingsValidation:
         monkeypatch.setenv("RENDER_INSTANCE_ID", "srv-abc")
 
         assert load_from().is_production is False
+
+
+class TestProductionWiring:
+    """Boot the app the way production does: no injected repository.
+
+    Every other auth test injects `InMemoryUserRepository`, which means it never
+    exercises the code that builds `MongoUserRepository` from a real client. That
+    gap hid two startup-only bugs: constructing the repository before
+    `mongo.connect()`, and PyMongo's refusal to encode a native `uuid.UUID`.
+    """
+
+    def test_repository_is_built_after_connect(self, settings: Settings) -> None:
+        from fastapi.testclient import TestClient
+
+        from knowledgedock.app import create_app
+        from knowledgedock.infrastructure.repositories.user_repository import (
+            MongoUserRepository,
+        )
+        from tests.conftest import FakeDatabase, FakeMongoManager
+
+        app = create_app(
+            settings,
+            mongo_manager=FakeMongoManager(database=FakeDatabase()),
+        )
+        with TestClient(app) as client:
+            assert isinstance(app.state.register_user._repository, MongoUserRepository)
+            assert client.get("/health").status_code == 200
+
+    def test_database_is_requested_only_after_the_client_exists(self, settings: Settings) -> None:
+        """`MongoManager.database()` raises before `connect()`. Prove the order."""
+        from fastapi.testclient import TestClient
+
+        from knowledgedock.app import create_app
+        from tests.conftest import FakeDatabase, FakeMongoManager
+
+        fake = FakeMongoManager(database=FakeDatabase())
+        app = create_app(settings, mongo_manager=fake)
+        with TestClient(app):
+            assert fake.connect_called, "connect() must run during startup"
+            assert fake.database_called_after_connect, (
+                "database() was called before connect(); this crashes on a real startup"
+            )
+
+    def test_startup_survives_an_unreachable_database(self, settings: Settings) -> None:
+        """A dead Atlas must not stop the process binding $PORT (Phase 01 decision).
+
+        `connect()` deliberately does not raise, so the client object exists even
+        when the ping failed. `database()` therefore succeeds and the failure
+        surfaces later, as a `ServerSelectionTimeoutError` on the first query.
+        """
+        from fastapi.testclient import TestClient
+        from pymongo.errors import ServerSelectionTimeoutError
+
+        from knowledgedock.app import create_app
+        from tests.conftest import FakeMongoManager
+
+        class DeadDatabase:
+            def __getitem__(self, name: str) -> object:
+                class DeadCollection:
+                    async def find_one(self, *a: object, **k: object) -> object:
+                        raise ServerSelectionTimeoutError("no Atlas reachable")
+
+                    async def insert_one(self, *a: object, **k: object) -> object:
+                        raise ServerSelectionTimeoutError("no Atlas reachable")
+
+                    async def create_index(self, *a: object, **k: object) -> str:
+                        return "ok"
+
+                return DeadCollection()
+
+        app = create_app(
+            settings, mongo_manager=FakeMongoManager(reachable=False, database=DeadDatabase())
+        )
+        with TestClient(app) as client:
+            # The process is up and honest about it.
+            assert client.get("/health").status_code == 200
+            assert client.get("/readyz").status_code == 503
+
+            # A failing query becomes a clean 503, not an unhandled 500.
+            registration = client.post(
+                "/auth/register", json={"email": "a@b.com", "password": "password123"}
+            )
+            assert registration.status_code == 503
+            assert registration.json()["error"]["code"] == "service_unavailable"
+
+            login = client.post("/auth/login", json={"email": "a@b.com", "password": "password123"})
+            assert login.status_code == 503
+            # Crucially not this: an outage must not look like a bad password.
+            assert login.json()["error"]["code"] != "authentication_failed"
+
+    def test_missing_client_produces_a_service_unavailable_repository(
+        self, settings: Settings
+    ) -> None:
+        """Defensive: no client at all means no usable repository, not a crash."""
+        from fastapi.testclient import TestClient
+
+        from knowledgedock.app import create_app
+        from knowledgedock.infrastructure.repositories.user_repository import (
+            UnavailableUserRepository,
+        )
+        from tests.conftest import FakeMongoManager
+
+        # `connected=False` makes `connect()` a no-op that never yields a client.
+        class NeverConnects(FakeMongoManager):
+            async def connect(self) -> None:
+                self.connect_called = True
+                self._connected = False
+
+        app = create_app(settings, mongo_manager=NeverConnects(reachable=False))
+        with TestClient(app) as client:
+            assert isinstance(app.state.register_user._repository, UnavailableUserRepository)
+            assert client.get("/health").status_code == 200
+            assert (
+                client.post(
+                    "/auth/register", json={"email": "a@b.com", "password": "password123"}
+                ).status_code
+                == 503
+            )

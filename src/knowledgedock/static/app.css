@@ -485,3 +485,72 @@ main {
     max-width: none;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Authentication pages                                               */
+/* ------------------------------------------------------------------ */
+
+.kd-auth-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 3rem 0 4rem;
+}
+
+.kd-auth-card {
+  /* The landing cards lift on hover; an auth form must not. */
+  width: 100%;
+  max-width: 26rem;
+  height: auto;
+  transition: border-color 0.25s ease;
+}
+
+.kd-auth-card:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.kd-auth-card-narrow {
+  max-width: 22rem;
+}
+
+.kd-auth-head {
+  margin-bottom: 1.5rem;
+}
+
+.kd-auth-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0.25rem 0 0.35rem;
+}
+
+.kd-auth-sub {
+  color: var(--kd-muted);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.kd-auth-alt {
+  margin: 1.25rem 0 0;
+  font-size: 0.875rem;
+  color: var(--kd-muted);
+  text-align: center;
+}
+
+.kd-auth-alt a {
+  color: var(--kd-accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.kd-auth-alt a:hover {
+  text-decoration: underline;
+}
+
+.kd-nav-user {
+  color: var(--kd-muted);
+  font-size: 0.875rem;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
