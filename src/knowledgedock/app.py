@@ -21,6 +21,7 @@ from pymongo.errors import PyMongoError
 from knowledgedock import __version__
 from knowledgedock.api.auth import router as auth_router
 from knowledgedock.api.dependencies import SESSION_COOKIE_NAME
+from knowledgedock.api.documents import router as documents_router
 from knowledgedock.api.health import router as health_router
 from knowledgedock.api.workspaces import router as workspaces_router
 from knowledgedock.application.auth.use_cases import (
@@ -29,6 +30,12 @@ from knowledgedock.application.auth.use_cases import (
     RegisterUser,
     RequestPasswordReset,
     ResolveCurrentUser,
+)
+from knowledgedock.application.documents.use_cases import (
+    DeleteDocument,
+    GetDocument,
+    ListDocuments,
+    UploadDocument,
 )
 from knowledgedock.application.workspaces.use_cases import (
     AddMember,
@@ -45,6 +52,10 @@ from knowledgedock.core.config import Settings, get_settings
 from knowledgedock.core.logging import configure_logging
 from knowledgedock.domain.errors import AppError, ErrorCode
 from knowledgedock.infrastructure.mongo import MongoManager
+from knowledgedock.infrastructure.repositories.document_repository import (
+    MongoDocumentRepository,
+    UnavailableDocumentRepository,
+)
 from knowledgedock.infrastructure.repositories.user_repository import (
     MongoUserRepository,
     UnavailableUserRepository,
@@ -55,6 +66,7 @@ from knowledgedock.infrastructure.repositories.workspace_repository import (
 )
 from knowledgedock.infrastructure.security.passwords import PasswordHasher
 from knowledgedock.infrastructure.security.tokens import TokenService
+from knowledgedock.infrastructure.storage import LocalFileStorage
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +77,8 @@ def create_app(
     mongo_manager: MongoManager | None = None,
     user_repository=None,
     workspace_repository=None,
+    document_repository=None,
+    storage=None,
     hasher: PasswordHasher | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
@@ -122,6 +136,37 @@ def create_app(
                 )
                 workspaces_repo = UnavailableWorkspaceRepository(exc)
 
+        if document_repository is not None:
+            documents_repo = document_repository
+        elif isinstance(repository, UnavailableUserRepository):
+            documents_repo = UnavailableDocumentRepository(repository.cause)
+        else:
+            try:
+                documents_repo = MongoDocumentRepository(mongo.database())
+            except Exception as exc:  # pragma: no cover - mirrors the other paths
+                logger.error(
+                    "documents.repository_unavailable",
+                    extra={"error": "could not reach the database at startup"},
+                    exc_info=True,
+                )
+                documents_repo = UnavailableDocumentRepository(exc)
+
+        # Uploads are staged on local disk. On Render that disk is ephemeral,
+        # which is fine: this is a staging area for processing, and the durable
+        # copy of the extracted text lives in MongoDB.
+        file_storage = storage or LocalFileStorage(settings.storage_dir)
+        file_storage.ensure_root()
+
+        app.state.upload_document = UploadDocument(
+            documents_repo,
+            file_storage,
+            allowed_content_types=settings.allowed_content_types,
+            max_bytes=settings.max_upload_size_mb * 1024 * 1024,
+        )
+        app.state.list_documents = ListDocuments(documents_repo)
+        app.state.get_document = GetDocument(documents_repo)
+        app.state.delete_document = DeleteDocument(documents_repo, file_storage)
+
         app.state.register_user = RegisterUser(
             repository,
             password_hasher,
@@ -155,7 +200,7 @@ def create_app(
         app.state.add_member = AddMember(workspaces_repo, repository, authorize)
         app.state.remove_member = RemoveMember(workspaces_repo, authorize)
 
-        await _ensure_indexes(repository, workspaces_repo)
+        await _ensure_indexes(repository, workspaces_repo, documents_repo)
 
         try:
             yield
@@ -214,6 +259,7 @@ def create_app(
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(workspaces_router)
+    app.include_router(documents_router)
 
     @app.get("/", include_in_schema=False)
     async def index(request: Request) -> Response:
@@ -226,7 +272,7 @@ def create_app(
     return app
 
 
-async def _ensure_indexes(repository, workspace_repository=None) -> None:
+async def _ensure_indexes(repository, workspace_repository=None, document_repository=None) -> None:
     """Create indexes, tolerating failure.
 
     A missing unique index would allow duplicate accounts, so the failure is
@@ -237,6 +283,8 @@ async def _ensure_indexes(repository, workspace_repository=None) -> None:
         await repository.ensure_indexes()
         if workspace_repository is not None:
             await workspace_repository.ensure_indexes()
+        if document_repository is not None:
+            await document_repository.ensure_indexes()
     except Exception:
         logger.error(
             "mongodb.index_creation_failed",

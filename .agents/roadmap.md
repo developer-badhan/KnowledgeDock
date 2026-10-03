@@ -13,7 +13,7 @@ Deployment setup (Atlas / Gemini / Render): `.agents/DEPLOYMENT.md`
 Phase 01 Foundation          [x]  8/8
 Phase 02 Authentication      [x]  6/6
 Phase 03 Workspaces          [x]  6/6
-Phase 04 Documents           [ ]  0/7
+Phase 04 Documents           [x]  7/7
 Phase 05 Ingestion           [ ]  0/7
 Phase 06 Retrieval           [ ]  0/6
 Phase 07 RAG                 [ ]  0/7
@@ -21,7 +21,7 @@ Phase 08 Reliability         [ ]  0/8
 Phase 09 Frontend            [ ]  0/6
 Phase 10 Production Readiness [ ]  0/9
 
-Overall: [████░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 30% (20/67)
+Overall: [████████░░░░░░░░░░░░░░░░░░░░░░░░░░] 40% (27/67)
 ```
 
 Legend: `[ ]` not started · `[x]` complete
@@ -127,6 +127,107 @@ Notes:
 Branch: `phase-02-authentication`
 
 Scope: upload, validation, metadata, processing status. See README §18 Phase 4 and SKILL.md §7–§9.
+
+### The state machine
+
+`ALLOWED_TRANSITIONS` is the only place a status can change. Nothing accepts
+`status` as input, so a client cannot set it.
+
+```text
+PENDING ──> PROCESSING ──> READY      (terminal)
+                │
+                └──> FAILED ──> PENDING   (explicit retry, clears chunks + error)
+```
+
+`PENDING -> READY` is refused. Without the guard a document could claim to be
+ready with no chunks behind it, and a retry could silently resurrect one whose
+processing had already failed. The guard lives on the domain object so Phase 5's
+worker and Phase 8's retry are subject to the same rule as everything else.
+
+### Re-upload replaces in place
+
+Content is SHA-256 hashed and a unique `(workspace_id, content_hash)` index makes
+"one document per distinct content per workspace" a database guarantee. Uploading
+the same bytes again updates that document — same id, new metadata, chunks
+discarded, status back to `PENDING`. Not a duplicate row, not a rejection.
+
+Two details that matter:
+
+- **Content identity is scoped per workspace.** Uploading the same file to
+  workspace B must not overwrite the document workspace A already owns.
+- **A concurrent duplicate is resolved, not surfaced.** Two uploads of identical
+  bytes race on the unique index; the loser re-reads the winner and treats its own
+  upload as a replacement too. A client that double-submits gets a sane answer
+  either way.
+- **Re-upload is refused while `PROCESSING`**, returning 409. Two workers on one
+  document would interleave their writes.
+
+### Hard delete, and why not soft
+
+Deleting removes the document row, its chunks, and the stored file.
+
+A tombstone would guard against nothing here: Render's disk is ephemeral, and the
+durable copy of the extracted text is in MongoDB. Worse, a soft-deleted row's
+chunks would still be returned by Phase 6's vector search — retrieval filters on
+`workspace_id` but not on the document still existing, so a deleted workspace's
+text would keep answering questions. Confirmed against Atlas: 0 chunk rows remain
+after delete.
+
+Chunks are removed *before* the document row, so a failure mid-way leaves the
+document recoverable rather than orphaned.
+
+### Rules that were designed, not defaulted
+
+| Rule | Reason |
+|---|---|
+| Stored path is `{workspace}/{sha256}{ext}`, never the client's filename | A filename is attacker-controlled text. This also makes identical bytes land on the same path, which is what makes re-upload a replacement. |
+| Extension comes from a content-type whitelist, not the filename | An unexpected MIME type cannot pick an executable suffix. |
+| SHA-256, not MD5 | The hash is the document's identity. A collision would silently discard one user's file in place of another's. |
+| Type and size are checked before anything is written | A rejected upload leaves nothing on disk. |
+| `Content-Type` parameters are stripped before matching | `text/plain; charset=utf-8` is the same type as `text/plain`. |
+| Filenames are stripped of control characters and separators | Keeps a display name from breaking a header or a log line, even though it never reaches the filesystem. |
+| `_absolute()` resolves then checks containment | `..` collapses during `resolve()`, so the check runs on the real path rather than the supplied string. |
+| Upload returns 202, not 201 | The document exists, but nothing is extracted or embedded yet. |
+| `find_scoped` filters `(id, workspace_id)` in one query | A document in another workspace takes the same path as one that never existed. |
+
+### Verification
+
+**237 tests pass** (163 previous + 74 new). `ruff check` and `ruff format` clean.
+
+Covered: upload and 202, content-type allowlist including `charset` parameters,
+empty and oversized files, path-traversal filenames, re-upload replacement and
+identity, per-workspace content scoping, concurrent-duplicate resolution,
+409 while processing, listing and pagination bounds, hard delete of row + chunks +
+file, `storage_path` never exposed, the full transition table, storage round-trip
+and traversal refusal, and outage behaviour.
+
+Two tests are load-bearing for the settled contract:
+`test_same_workspace_member_can_read_it` and `..._can_list_and_delete` assert
+that a member who did *not* upload the document gets 200. Changing the access
+model has to be a deliberate edit there, not a silent regression.
+
+**Verified against real Atlas:**
+
+```text
+indexes   documents_workspace_hash_unique (UNIQUE), documents_workspace_recent,
+          documents_status_queue, chunks_document_index_unique (UNIQUE),
+          chunks_workspace
+same content, same ws   -> blocked by the unique index
+same content, other ws  -> allowed (identity is per workspace)
+find_scoped wrong ws    -> None (nothing leaked)
+re-upload               -> same id, new filename, status pending
+delete                  -> chunks 1 -> 0, row gone, wrong-ws delete returns False
+```
+
+### A testing constraint worth knowing
+
+PyMongo's `AsyncMongoClient` binds to the event loop it was created on, and each
+`TestClient` gets its own. That is why the suite uses in-memory repositories for
+multi-actor tests: sharing one app across several `TestClient` contexts works with
+doubles but raises `Cannot use AsyncMongoClient in different event loop` with a
+real client. Single-actor HTTP runs against Atlas are still done end to end, and
+production is unaffected because uvicorn runs one loop for the process.
+
 
 - [x] `users` collection model + unique index on `email`
 - [x] `POST /auth/register` — validation, duplicate detection, password hashing
@@ -290,8 +391,8 @@ double was hand-written and therefore agreed with the expectation.
 `TestMongoRepositorySemantics` now pins it against a collection that honours
 PyMongo's default.
 
-Notes: no workspace UI yet. Phase 4 needs only the API, and Phase 9 owns the
-dashboard, switcher and member management screens.
+Notes: no workspace UI yet. Phase 9 owns the dashboard, switcher and member
+management screens.
 
 ---
 
@@ -354,13 +455,13 @@ Not `{"_id": ...}` followed by a comparison. Two reasons:
 
 ### Checklist
 
-- [ ] `documents` collection model with explicit status enum (PENDING/PROCESSING/READY/FAILED)
-- [ ] Local file storage adapter (temp dir, later S3-compatible) + content hashing
-- [ ] `POST /workspaces/{id}/documents` — content-type allowlist, size limit, 202 response
-- [ ] Explicit state-transition guard (client cannot set status)
-- [ ] `GET /workspaces/{id}/documents` — paginated, workspace-filtered list
-- [ ] `GET /workspaces/{id}/documents/{id}` — status, `processing_error`, chunk count
-- [ ] `DELETE /workspaces/{id}/documents/{id}` — soft delete + chunk cleanup
+- [x] `documents` collection model with explicit status enum (PENDING/PROCESSING/READY/FAILED)
+- [x] Local file storage adapter (temp dir, later S3-compatible) + content hashing
+- [x] `POST /workspaces/{id}/documents` — content-type allowlist, size limit, 202 response
+- [x] Explicit state-transition guard (client cannot set status)
+- [x] `GET /workspaces/{id}/documents` — paginated, workspace-filtered list
+- [x] `GET /workspaces/{id}/documents/{id}` — status, `processing_error`, chunk count
+- [x] `DELETE /workspaces/{id}/documents/{id}` — **hard** delete of row, chunks and file
 
 Scope: upload, validation, metadata, processing status. See README §18 Phase 4 and SKILL.md §7–§9.
 
@@ -540,3 +641,9 @@ Roadmap updated
 | 32 | 03/04 | Non-members get 404, and the response is byte-identical to a missing resource | A 403 answers 'this exists but is not yours', which leaks existence across tenants. 404 makes 'not yours' and 'does not exist' the same response. Verified across all six workspace routes by comparing the two bodies, not just the status codes. This is the guard Phase 4 inherits. |
 | 33 | 04 | Document routes are nested under the workspace | `require_workspace_access` resolves membership from a path parameter, so the workspace has to be in the path for the check to run as a dependency. A flat `/documents/{id}` would move the check into the use case, where a future endpoint could omit it. Nesting keeps 'a handler cannot execute without the isolation check' structurally true. |
 | 34 | 04 | Document queries filter on `(id, workspace_id)` together | A document in another workspace must take the same code path as one that does not exist, so the two cannot diverge in status code or response timing. Querying both fields in one `_id` lookup also makes the scoping free rather than a second step that could be forgotten. |
+| 35 | 04 | Hard delete, not soft | Render's filesystem is ephemeral and the durable text lives in MongoDB, so a tombstone protects nothing. Worse, a soft-deleted row's chunks would still be returned by Phase 6's vector search, which filters on workspace_id but not on the document still existing — deleted text would keep answering questions. Chunks are deleted before the document row so a partial failure leaves a recoverable document rather than an orphan. |
+| 36 | 04 | Document identity is the SHA-256 of its content, scoped per workspace | A unique (workspace_id, content_hash) index makes 'one document per distinct content' a database guarantee rather than a convention, which is what makes the worker's repeat executions safe (SKILL.md §9). Scoping by workspace is not optional: a global hash would let an upload to workspace B overwrite a document workspace A owns. SHA-256 because a collision would silently discard one user's file in place of another's. |
+| 37 | 04 | Re-upload updates in place; it is never rejected and never duplicates | The stated requirement. It also falls out of content addressing for free: same bytes, same document id, same storage path, so the old chunks are dropped and the document returns to PENDING. Refused with 409 while PROCESSING, because two workers interleaving writes on one document is worse than an error. |
+| 38 | 04 | A concurrent duplicate upload is resolved in favour of the stored row | Two uploads of identical bytes race on the unique index. The loser re-reads the winner and treats its own upload as a replacement, returning the same 202 with replaced: true. Surfacing a 409 would make a double-clicking user think their upload failed. |
+| 39 | 04 | The stored path is derived from the content hash, never from the client filename | A filename is attacker-controlled text, and interpolating one into a path is how traversal happens. The filename is kept for display and sanitised; the extension comes from a content-type whitelist so an unexpected MIME type cannot pick an executable suffix. Containment is checked after resolve(), because '..' collapses during resolution. |
+| 40 | 04 | Upload answers 202, and does not itself process anything | The document exists but nothing has been extracted or embedded, which is Phase 5's job. Returning 201 would imply the work is done. The status is PENDING and the worker picks it up from a (status, created_at) index. |
