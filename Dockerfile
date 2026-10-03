@@ -13,6 +13,8 @@
 #   * `--mount=type=cache` keeps uv's download cache outside the image layers.
 #   * `uv sync --frozen` requires uv.lock to exist and never re-resolves deps.
 #   * Tests and dev dependencies are excluded from the runtime image.
+#   * Both stages are python:3.12 on Debian trixie, so the venv's interpreter
+#     symlink (/usr/local/bin/python3.12) resolves in the runtime image too.
 #
 # Required build context files: pyproject.toml, uv.lock, .python-version, src/
 # =============================================================================
@@ -20,7 +22,9 @@
 # -----------------------------------------------------------------------------
 # Stage 1 — builder
 # -----------------------------------------------------------------------------
-FROM ghcr.io/astral-sh/uv:0.11.16-python3.12-bookworm-slim AS builder
+# uv publishes `trixie` from 0.10.x onward; the last image with a `bookworm`
+# variant was 0.9.30. Pin the version that generated uv.lock.
+FROM ghcr.io/astral-sh/uv:0.11.16-python3.12-trixie-slim AS builder
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -43,7 +47,10 @@ COPY src ./src
 # -----------------------------------------------------------------------------
 # Stage 2 — runtime
 # -----------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm AS runtime
+# Same Debian release as the builder on purpose. Wheels with compiled extensions
+# (pydantic-core, uvloop) are resolved against the builder's glibc; running them
+# on an older base would fail at import time, not at build time.
+FROM python:3.12-slim-trixie AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -61,7 +68,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Unprivileged runtime user. Render overrides $PORT via its own env var.
-RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser \
+# `adduser` (priority: important) is always present on debian slim;
+# `useradd` comes from the optional `passwd` package and is not guaranteed.
+# `--system` implies a same-named group, a nologin shell and no password.
+RUN adduser --system --uid 10001 --no-create-home --home /nonexistent appuser \
     && mkdir -p "$STORAGE_DIR" \
     && chown -R appuser:appuser "$STORAGE_DIR"
 

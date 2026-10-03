@@ -336,29 +336,31 @@ openssl rand -base64 48
 
 ---
 
-# Part E — The first deploy will fail. Here is why, and how to fix it.
+# Part E — What the first deploy can and cannot prove
 
-The repository currently contains **no `src/` directory**. The Dockerfile's
-second stage runs `COPY src ./src`, so the Docker build fails immediately with
-`"/src": not found`.
+Phase 1 is merged on `main`, so `src/` exists and the image builds. The deployed
+service answers:
 
-Two ways forward:
+```text
+GET /            -> 200  Bootstrap shell
+GET /health      -> 200  {"status":"ok"}
+GET /health/ready-> 503 or 200, depending on Atlas reachability
+GET /static/*    -> 200
+```
 
-### Option 1 — Accept the red build (infra only)
+This is enough to prove the whole delivery pipeline before any business logic
+exists: Docker builds, the container binds `0.0.0.0:$PORT`, Render's port scanner
+and health check pass, and `/health/ready` proves the Atlas credentials and
+network path work from inside the container.
 
-Complete Parts A–D anyway. Atlas, the Gemini key and the Render service all get
-created and stay configured. The service shows `Failed` under Events. As soon
-as Phase 1 lands on `main`, Render auto-rebuilds and goes green. Nothing is
-wasted; you only have to look at a red status.
+It proves nothing about authentication, documents, ingestion, retrieval or RAG.
+Those land in Phases 2–7 and each one gets its own roadmap checkbox.
 
-### Option 2 — Push a throwaway bootstrap so the deploy is green now
-
-Create a minimal `src/knowledgedock/main.py` that answers `/health` and reads
-`MONGODB_URI` on the branch `phase-01-health-endpoint`, and merge it. The build
-succeeds, `/health` returns 200, Render shows the service as Live, and the
-Atlas connection is verified from inside the real container.
-
-This is what Phase 1 does anyway, so nothing is throwaway.
+**Order matters.** Create the Render service and set every variable from
+`.env.sample` *before* the first build. The application validates its
+configuration at import time and exits with `MissingConfigurationError` naming
+the offending variable, so a partial environment fails the deploy loudly rather
+than starting in a broken state.
 
 ---
 
@@ -415,7 +417,68 @@ If a secret ever leaks:
 
 ---
 
-# Part G — Verification checklist
+# Part G — Build troubleshooting
+
+## `ERROR: ghcr.io/astral-sh/uv:<tag>: not found`
+
+The build died on the very first `FROM`. The tag does not exist in the registry.
+uv renamed its Debian variant: images up to `0.9.30` ship `-bookworm-slim`, and
+from `0.10.x` onward the variant is `-trixie-slim`. There is no `bookworm` tag for
+modern uv at all.
+
+Check which tags actually exist before pinning:
+
+```bash
+curl -s "https://ghcr.io/token?scope=repository:astral-sh/uv:pull&service=ghcr.io" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" > /tmp/tok
+curl -s -H "Authorization: Bearer $(cat /tmp/tok)" \
+  "https://ghcr.io/v2/astral-sh/uv/tags/list?n=1000" \
+  | python3 -c "import sys,json; print([t for t in json.load(sys.stdin)['tags'] if '0.11' in t and 'python3.12' in t])"
+```
+
+Note the registry returns at most 1000 tags per page. If a version you expect is
+absent, page through with the `Link: rel="next"` header before concluding it does
+not exist.
+
+Verify a `FROM` line resolves without running a build:
+
+```bash
+python3 - <<'EOF'
+import json, urllib.request
+repo, tag = "astral-sh/uv", "0.11.16-python3.12-trixie-slim"
+tok = json.load(urllib.request.urlopen(
+    f"https://ghcr.io/token?scope=repository:{repo}:pull&service=ghcr.io"))["token"]
+req = urllib.request.Request(f"https://ghcr.io/v2/{repo}/manifests/{tag}", headers={
+    "Authorization": f"Bearer {tok}",
+    "Accept": "application/vnd.oci.image.index.v1+json,"
+              "application/vnd.docker.distribution.manifest.list.v2+json"})
+print(json.load(urllib.request.urlopen(req))["manifests"][0]["platform"])
+EOF
+```
+
+## `exec: "python3.12": executable file not found` or `ModuleNotFoundError` on a C extension
+
+The builder and the runtime were on different Debian releases. Wheels are
+resolved against the builder's glibc, and an import-time failure on the older
+base is the symptom. Keep `FROM ...-trixie-slim` and `FROM python:3.12-slim-trixie`
+on the same release, and keep the same `/usr/local` Python layout so the copied
+`.venv` interpreter symlink resolves.
+
+## `"/src": not found`
+
+`src/` was not in the build context. Check `.dockerignore` does not exclude it,
+and that the code is committed — Render builds the pushed commit, not your
+working tree.
+
+## `MissingConfigurationError: <VARIABLE> is not set`
+
+The container started but configuration was incomplete. Render serves variables
+from the dashboard; a variable that is absent there but present in `.env.sample`
+will stop startup. See `.env.sample` for the full list.
+
+---
+
+# Part H — Verification checklist
 
 Run through this once after the first successful deploy.
 

@@ -32,6 +32,28 @@ GEMINI_EMBEDDING_TASK_QUERY=RETRIEVAL_QUERY
 ALLOWED_CONTENT_TYPES=text/plain,text/markdown
 """
 
+# Derived from .env.sample so the list cannot drift from the real contract.
+APP_ENV_KEYS = tuple(
+    line.split("=", 1)[0].strip()
+    for line in (Path(__file__).resolve().parents[1] / ".env.sample")
+    .read_text(encoding="utf-8")
+    .splitlines()
+    if line.strip() and not line.startswith("#") and "=" in line
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the developer's real shell environment out of the tests.
+
+    decouple resolves `os.environ` before the `.env` file, so a variable that
+    was exported in the shell (a stray `GEMINI_API_KEY`, for example) would
+    silently override the throwaway fixture and make tests pass or fail
+    depending on whose terminal ran them.
+    """
+    for key in APP_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
 
 class FakeMongoManager:
     """Stands in for MongoManager so tests run without a live database."""
