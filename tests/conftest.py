@@ -9,6 +9,7 @@ verify HTTP contract and configuration; the deployment smoke test covers Atlas.
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,10 +22,14 @@ from fastapi.testclient import TestClient
 
 from knowledgedock.app import create_app
 from knowledgedock.core.config import Settings, load_settings
+from knowledgedock.infrastructure.repositories.document_repository import (
+    InMemoryDocumentRepository,
+)
 from knowledgedock.infrastructure.repositories.user_repository import InMemoryUserRepository
 from knowledgedock.infrastructure.repositories.workspace_repository import (
     InMemoryWorkspaceRepository,
 )
+from knowledgedock.infrastructure.storage import LocalFileStorage
 
 PASSWORD = "a-perfectly-fine-password"
 
@@ -157,13 +162,24 @@ def users() -> InMemoryUserRepository:
     return InMemoryUserRepository()
 
 
-def _build_app(settings, users, workspaces, reachable=True):
+def _build_app(settings, users, workspaces, reachable=True, documents=None, storage=None):
     return create_app(
         settings,
         mongo_manager=FakeMongoManager(reachable=reachable),
         user_repository=users,
         workspace_repository=workspaces,
+        document_repository=(documents if documents is not None else InMemoryDocumentRepository()),
+        storage=storage if storage is not None else LocalFileStorage(make_storage_root()),
     )
+
+
+def make_storage_root() -> str:
+    """A private upload directory per app instance.
+
+    Tests share one process, so a fixed path would let one test's upload appear
+    in another's assertions.
+    """
+    return tempfile.mkdtemp(prefix="kd-test-uploads-")
 
 
 def _client(
@@ -172,12 +188,16 @@ def _client(
     reachable: bool = True,
     users: InMemoryUserRepository | None = None,
     workspaces: InMemoryWorkspaceRepository | None = None,
+    documents: InMemoryDocumentRepository | None = None,
+    storage: LocalFileStorage | None = None,
 ) -> Iterator[TestClient]:
     app = _build_app(
         settings,
         users if users is not None else InMemoryUserRepository(),
         workspaces if workspaces is not None else InMemoryWorkspaceRepository(),
         reachable=reachable,
+        documents=documents,
+        storage=storage,
     )
     with TestClient(app) as test_client:
         test_client.users = app.state.register_user._repository  # type: ignore[attr-defined]
@@ -198,6 +218,20 @@ def workspaces() -> InMemoryWorkspaceRepository:
 @pytest.fixture
 def ws_client(settings: Settings, workspaces: InMemoryWorkspaceRepository) -> Iterator[TestClient]:
     yield from _client(settings, workspaces=workspaces)
+
+
+@pytest.fixture
+def documents() -> InMemoryDocumentRepository:
+    return InMemoryDocumentRepository()
+
+
+@pytest.fixture
+def doc_client(
+    settings: Settings,
+    workspaces: InMemoryWorkspaceRepository,
+    documents: InMemoryDocumentRepository,
+) -> Iterator[TestClient]:
+    yield from _client(settings, workspaces=workspaces, documents=documents)
 
 
 @pytest.fixture
