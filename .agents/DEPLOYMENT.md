@@ -43,6 +43,11 @@ Render Frankfurt  → Atlas  Frankfurt  (eu-central-1)
 Render Singapore  → Atlas  Singapore  (ap-southeast-1)
 ```
 
+Keep the two in the **same** region. `$vectorSearch` is an aggregation
+pipeline, so one question costs several Atlas round trips; a cross-region
+pair puts an ocean in that path, and M0 allows only 100 ops/sec.
+
+
    - Leave **Tier**: `M0 FREE`
    - Click **Create Deployment**.
 4. Wait 1–3 minutes. The dashboard turns green and shows `M0 FREE` with your
