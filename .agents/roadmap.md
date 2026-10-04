@@ -19,9 +19,9 @@ Phase 06 Retrieval           [x]  6/6
 Phase 07 RAG                 [x]  7/7
 Phase 08 Reliability         [x]  8/8
 Phase 09 Frontend            [x]  7/7
-Phase 10 Production Readiness [ ]  0/9
+Phase 10 Production Readiness [x] 11/11
 
-Overall: [████████████████████████░░░░░░░░░░░░░░░░] 91% (62/68)
+Overall: [██████████████████████████████████████████] 100% (73/73)
 ```
 
 Legend: `[ ]` not started · `[x]` complete
@@ -781,17 +781,17 @@ Branch: `phase-10-production-readiness`
 
 Scope: tests, Docker, environment configuration, security review, observability, documentation.
 
-- [ ] Auth tests (register, duplicate, login, invalid credentials)
-- [ ] Authorization tests (cross-workspace document/workspace access denied)
-- [ ] Document lifecycle tests (validation, happy path, failure path, idempotent reprocessing)
-- [ ] Retrieval + RAG tests (workspace filter, threshold, no-answer, provider failure)
-- [ ] Reliability tests (timeout, retry bounds, controlled provider errors)
-- [ ] End-to-end test of the full flow in `SKILL.md` §40
-- [ ] Render deployment verified — env vars set, health check path `/health`, `$PORT` honoured, Atlas IP allowlist includes Render egress
-- [ ] Production Dockerfile verified (multi-stage, non-root, layer caching) + image size check
-- [ ] Security review — secrets, file limits, upload validation, error leakage
-- [ ] Observability — structured JSON logs, usage reporting endpoint `GET /usage`
-- [ ] README + `SKILL.md`/roadmap updates documenting final architecture and decisions
+- [x] Auth tests (register, duplicate, login, invalid credentials)
+- [x] Authorization tests (cross-workspace document/workspace access denied)
+- [x] Document lifecycle tests (validation, happy path, failure path, idempotent reprocessing)
+- [x] Retrieval + RAG tests (workspace filter, threshold, no-answer, provider failure)
+- [x] Reliability tests (timeout, retry bounds, controlled provider errors)
+- [x] End-to-end test of the full flow in `SKILL.md` §40
+- [x] Render deployment verified — env vars set, health check path `/health`, `$PORT` honoured, Atlas IP allowlist includes Render egress
+- [x] Production Dockerfile verified (multi-stage, non-root, layer caching) + image size check
+- [x] Security review — secrets, file limits, upload validation, error leakage
+- [x] Observability — structured JSON logs, usage reporting endpoint `GET /usage`
+- [x] README + `SKILL.md`/roadmap updates documenting final architecture and decisions
 
 Notes: Docker is a build/deploy artifact, not a local MongoDB stack. There is no
 local MongoDB compose file — Atlas M0 is the only database. `uvicorn` is the
@@ -889,3 +889,6 @@ Roadmap updated
 | 64 | 09 | Status polling stops once nothing is in flight | The dashboard refreshes every 4s only while a document is pending or processing, and a settled row schedules no request. An always-on poll from every open tab is pure waste against a free-tier M0 that allows 100 ops/sec and charges nothing for idle ones. |
 | 65 | 09 | Citations render as name, chunk index and score, not as links | A chunk is a slice of a document, not a document. There is no honest URL for one, and linking the parent would misrepresent where a claim came from. |
 | 66 | 09 | Sources are plain text, and the file input stays keyboard-reachable | Confidence should not depend on telling two hues apart, so state is carried by borders and text as well as colour; status changes are announced via a live region. The file input is visually hidden rather than `display:none`, which would remove it from the tab order entirely. |
+| 67 | 10 | The §40 end-to-end test stubs only the network providers | Everything else is the code that ships, including the real ingestion worker, so the document reaches READY by being processed rather than by a test forcing the status. Intermediate steps are observed through the state they leave behind, because a test that pokes at internals passes while the pipeline is broken. |
+| 68 | 10 | `GET /usage` is workspace-scoped, window-bounded and not rate limited | Usage is a property of the workspace that caused it, and a report that could be widened to 'all workspaces' would be one query away from disclosing another tenant. The window is bounded because an unbounded report on a long-lived workspace walks every row ever written. No rate limit: it reads only from this application, and throttling the observability surface defeats its purpose. |
+| 69 | 10 | The security review is encoded as tests, not prose | Prose goes stale silently; a test fails loudly. The credential scan inspects the content of candidates rather than their presence, so documenting a DSN's shape and shipping empty sample values both pass while a real password does not. |

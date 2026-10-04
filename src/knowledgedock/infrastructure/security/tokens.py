@@ -40,8 +40,15 @@ class TokenService:
         self._expire_minutes = expire_minutes
         self._issuer = issuer
 
-    def issue_session(self, user_id: UUID, session_version: int) -> str:
-        now = datetime.now(UTC)
+    def issue_session(
+        self, user_id: UUID, session_version: int, *, now: datetime | None = None
+    ) -> str:
+        """Mint a session token.
+
+        `now` is injectable so expiry can be tested without sleeping for an hour or
+        freezing the clock globally. Production callers omit it.
+        """
+        now = now or datetime.now(UTC)
         payload = {
             "sub": str(user_id),
             "sv": session_version,
@@ -65,7 +72,19 @@ class TokenService:
                 self._secret,
                 algorithms=[ALGORITHM],
                 issuer=self._issuer,
-                options={"require": ["exp", "sub", "iss"]},
+                # `verify_iat` is off on purpose. `iat` is recorded so a token's age
+                # can be audited, but it must not gate validity: PyJWT checks it
+                # against the wall clock, and the wall clock is not monotonic. An
+                # NTP correction or a VM resume that steps time backwards makes a
+                # session minted a moment earlier look like it was issued in the
+                # future, and every live session is rejected with
+                # ImmatureSignatureError. That is a real outage on a cloud host,
+                # and it produced a test flake that took four phases to trace.
+                #
+                # `exp` still gates, which is the claim that carries meaning. A
+                # `leeway` would fix this too but would also widen the expiry
+                # window, so it trades a real weakening for the symptom.
+                options={"require": ["exp", "sub", "iss"], "verify_iat": False},
             )
             subject = UUID(payload["sub"])
             version = payload["sv"]
