@@ -68,14 +68,11 @@ class EmbeddingBatch:
 
 class EmbeddingProvider(Protocol):
     @property
-    @property
     def dimensions(self) -> int: ...
 
     @property
-    @property
     def model(self) -> str: ...
 
-    @property
     @property
     def provider_name(self) -> str: ...
 

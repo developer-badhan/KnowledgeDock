@@ -140,8 +140,6 @@ class ProcessDocument:
 
         oversized = [c for c in chunks if estimate_tokens(c["text"]) > self._max_embed_tokens]
         if oversized:
-            # A single chunk over the provider's ceiling. Recorded rather than
-            # sent, because Gemini rejects the whole request.
             logger.warning(
                 "ingestion.chunk_over_token_limit",
                 extra={
@@ -150,6 +148,9 @@ class ProcessDocument:
                     "chunk_size": self._chunk_size,
                 },
             )
+            chunks = [c for c in chunks if estimate_tokens(c["text"]) <= self._max_embed_tokens]
+            if not chunks:
+                return await self._fail(document, "All chunks exceed the embedding token limit.")
 
         batch = await self._embeddings.embed(
             [chunk["text"] for chunk in chunks], task_type=self._task_type

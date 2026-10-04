@@ -221,14 +221,13 @@ class ConfirmPasswordReset:
             # The account was deleted between the request and the confirmation.
             raise NotFound("That reset link is invalid or has already been used.")
 
+        logger.info(
+            "auth.password_reset_completed",
+            extra={"user_id": str(record.user_id), "session_version": new_version},
+        )
         user = await self._repository.find_by_id(record.user_id)
         if user is None:
             raise NotFound("That reset link is invalid or has already been used.")
-
-        logger.info(
-            "auth.password_reset_completed",
-            extra={"user_id": str(user.id), "session_version": new_version},
-        )
         return user
 
 
