@@ -19,6 +19,7 @@ import path cannot disagree about what is uploadable.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass
 from typing import BinaryIO
@@ -179,10 +180,8 @@ class UploadDocument:
                 "documents.upload_race_resolved",
                 extra={"document_id": str(winner.id), "workspace_id": str(access.workspace_id)},
             )
-            try:
+            with contextlib.suppress(OSError, ValueError):
                 source.seek(0)
-            except (OSError, ValueError):  # pragma: no cover - depends on stream
-                pass
             return await self._replace(
                 winner, access, filename, content_type, source, written, replace_bytes=written
             )

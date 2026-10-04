@@ -81,9 +81,11 @@ class TokenService:
                 # ImmatureSignatureError. That is a real outage on a cloud host,
                 # and it produced a test flake that took four phases to trace.
                 #
-                # `exp` still gates, which is the claim that carries meaning. A
-                # `leeway` would fix this too but would also widen the expiry
-                # window, so it trades a real weakening for the symptom.
+                # Trade-off documented: disabling `verify_iat` means a token with a
+                # future `iat` (clock skew) would be accepted. The alternative,
+                # using `leeway`, would widen the expiry window and weaken `exp`
+                # enforcement. Since `exp` is the security-critical claim, we
+                # accept the `iat` risk and rely on `exp` for expiry.
                 options={"require": ["exp", "sub", "iss"], "verify_iat": False},
             )
             subject = UUID(payload["sub"])

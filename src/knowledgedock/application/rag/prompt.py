@@ -91,6 +91,13 @@ def neutralise(text: str) -> str:
     Only the delimiters are touched. Content is otherwise preserved verbatim --
     rewriting it would corrupt the very evidence the answer is supposed to rest
     on, and quoting a source accurately matters more than tidiness.
+
+    Assumption: the `<retrieved_context>` / `</retrieved_context>` fence is the
+    sole structural boundary between trusted instructions and untrusted data.
+    Neutralizing the closing tag prevents a payload from closing the fence and
+    continuing in the instruction voice. This defense does not depend on
+    recognizing attack phrases (which paraphrase bypasses) and does not alter
+    content, so evidence integrity is preserved.
     """
     # Case-insensitive, so `</RETRIEVED_CONTEXT>` is neutralised too.
     for tag in (CONTEXT_CLOSE, CONTEXT_OPEN):

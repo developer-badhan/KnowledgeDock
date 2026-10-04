@@ -169,11 +169,12 @@ def document_chunks(
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough token count for Gemini's tokenizer.
+    """Rough token count for Gemini's tokenizer (ESTIMATE ONLY).
 
     Gemini does not publish an exact local tokenizer, and calling the API to
     count tokens would defeat the purpose of a local estimate. Four characters per
-    token is the standard approximation for English prose. It is used only to
+    token is the standard approximation for English prose. This estimate may
+    over- or under-count actual tokens depending on content. It is used only to
     refuse an over-long chunk before spending a request, never for billing.
     """
     return max(1, len(text) // 4)

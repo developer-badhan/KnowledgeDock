@@ -338,6 +338,8 @@ async def ui_ask(
     A form post, not HTMX: the answer can take several seconds, and a full-page
     submit shows progress and survives a slow provider honestly. The HTMX path is
     still used for the follow-up question form inside the answer fragment.
+    HTMX with hx-indicator was considered but full-page POST is simpler and more
+    reliable for long-running AI calls on the free tier.
     """
     try:
         parsed = UUID(conversation_id) if conversation_id else None
