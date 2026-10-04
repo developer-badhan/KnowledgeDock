@@ -25,6 +25,7 @@ from knowledgedock.api.auth import router as auth_router
 from knowledgedock.api.dependencies import SESSION_COOKIE_NAME
 from knowledgedock.api.documents import router as documents_router
 from knowledgedock.api.health import router as health_router
+from knowledgedock.api.query import router as query_router
 from knowledgedock.api.search import router as search_router
 from knowledgedock.api.workspaces import router as workspaces_router
 from knowledgedock.application.auth.use_cases import (
@@ -41,6 +42,13 @@ from knowledgedock.application.documents.use_cases import (
     UploadDocument,
 )
 from knowledgedock.application.ingestion.process_document import ProcessDocument
+from knowledgedock.application.rag.answer_question import (
+    AskQuestion,
+    DeleteConversation,
+    GetConversationHistory,
+    ListConversations,
+    StartConversation,
+)
 from knowledgedock.application.retrieval.search import SemanticSearch
 from knowledgedock.application.workspaces.use_cases import (
     AddMember,
@@ -60,10 +68,15 @@ from knowledgedock.infrastructure.ai.embedding import (
     GeminiEmbeddingProvider,
     NullEmbeddingProvider,
 )
+from knowledgedock.infrastructure.ai.llm import GeminiChatProvider, NullLLMProvider
 from knowledgedock.infrastructure.mongo import MongoManager
 from knowledgedock.infrastructure.repositories.chunk_repository import (
     MongoChunkRepository,
     UnavailableChunkRepository,
+)
+from knowledgedock.infrastructure.repositories.conversation_repository import (
+    MongoConversationRepository,
+    UnavailableConversationRepository,
 )
 from knowledgedock.infrastructure.repositories.document_repository import (
     MongoDocumentRepository,
@@ -94,8 +107,10 @@ def create_app(
     workspace_repository=None,
     document_repository=None,
     chunk_repository=None,
+    conversation_repository=None,
     storage=None,
     embeddings=None,
+    llm=None,
     processing_enabled: bool | None = None,
     hasher: PasswordHasher | None = None,
 ) -> FastAPI:
@@ -168,6 +183,21 @@ def create_app(
                     exc_info=True,
                 )
                 documents_repo = UnavailableDocumentRepository(exc)
+
+        if conversation_repository is not None:
+            conversations_repo = conversation_repository
+        elif isinstance(repository, UnavailableUserRepository):
+            conversations_repo = UnavailableConversationRepository(repository.cause)
+        else:
+            try:
+                conversations_repo = MongoConversationRepository(mongo.database())
+            except Exception as exc:  # pragma: no cover - mirrors the other paths
+                logger.error(
+                    "conversations.repository_unavailable",
+                    extra={"error": "could not reach the database at startup"},
+                    exc_info=True,
+                )
+                conversations_repo = UnavailableConversationRepository(exc)
 
         # Uploads are staged on local disk. On Render that disk is ephemeral,
         # which is fine: this is a staging area for processing, and the durable
@@ -270,7 +300,28 @@ def create_app(
             context_max_characters=settings.context_max_chars,
         )
 
-        await _ensure_indexes(repository, workspaces_repo, documents_repo, chunks_repo)
+        app.state.ask_question = AskQuestion(
+            search=app.state.semantic_search,
+            llm=llm or _build_llm_provider(settings),
+            conversations=conversations_repo,
+            top_k=settings.retrieval_top_k,
+            min_score=settings.retrieval_min_score,
+            history_max_messages=settings.llm_history_max_messages,
+            max_question_characters=settings.llm_max_question_characters,
+        )
+        app.state.start_conversation = StartConversation(conversations_repo)
+        app.state.list_conversations = ListConversations(conversations_repo)
+        app.state.get_conversation_history = GetConversationHistory(conversations_repo)
+        app.state.delete_conversation = DeleteConversation(conversations_repo)
+        app.state.conversation_repository = conversations_repo
+
+        await _ensure_indexes(
+            repository,
+            workspaces_repo,
+            documents_repo,
+            chunks_repo,
+            conversations_repo,
+        )
 
         # The vector index is created here so a fresh Atlas cluster needs no
         # manual step. `database()` raises when there is no client at all, and
@@ -363,6 +414,7 @@ def create_app(
     app.include_router(workspaces_router)
     app.include_router(documents_router)
     app.include_router(search_router)
+    app.include_router(query_router)
 
     @app.get("/", include_in_schema=False)
     async def index(request: Request) -> Response:
@@ -376,7 +428,11 @@ def create_app(
 
 
 async def _ensure_indexes(
-    repository, workspace_repository=None, document_repository=None, chunk_repository=None
+    repository,
+    workspace_repository=None,
+    document_repository=None,
+    chunk_repository=None,
+    conversation_repository=None,
 ) -> None:
     """Create indexes, tolerating failure.
 
@@ -392,6 +448,8 @@ async def _ensure_indexes(
             await document_repository.ensure_indexes()
         if chunk_repository is not None:
             await chunk_repository.ensure_indexes()
+        if conversation_repository is not None:
+            await conversation_repository.ensure_indexes()
     except Exception:
         logger.error(
             "mongodb.index_creation_failed",
@@ -505,6 +563,26 @@ def _error_response(
             logger.warning("error_page_render_failed", exc_info=True)
     return JSONResponse(
         status_code=status_code, content={"error": {"code": code, "message": message}}
+    )
+
+
+def _build_llm_provider(settings: Settings):
+    """Choose the generation implementation from configuration.
+
+    `AI_PROVIDER=null` selects the deterministic local provider, so the whole RAG
+    path runs without an API key. Same switch as embeddings: one variable decides
+    whether this process talks to Gemini or to nothing.
+    """
+    if settings.ai_provider == "null":
+        return NullLLMProvider()
+    return GeminiChatProvider(
+        api_key=settings.gemini_api_key,
+        model=settings.gemini_chat_model,
+        temperature=settings.gemini_chat_temperature,
+        max_output_tokens=settings.gemini_chat_max_output_tokens,
+        timeout_seconds=settings.ai_timeout_seconds,
+        max_retries=settings.ai_max_retries,
+        backoff_seconds=settings.ai_retry_backoff_seconds,
     )
 
 
