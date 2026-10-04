@@ -51,7 +51,7 @@ from knowledgedock.application.rag.answer_question import (
 from knowledgedock.application.workspaces.use_cases import ListWorkspaces
 from knowledgedock.domain.conversation import Answer, Message
 from knowledgedock.domain.documents import Document
-from knowledgedock.domain.errors import AppError, NotFound
+from knowledgedock.domain.errors import AppError, NotFound, ValidationFailed
 from knowledgedock.domain.users import User
 from knowledgedock.domain.workspaces import Workspace, WorkspaceAccess
 
@@ -142,6 +142,10 @@ def _base_context(request: Request, **extra: Any) -> dict[str, Any]:
         "app_name": APP_NAME,
         "version": __version__,
         "is_production": settings.is_production,
+        # base.html gates the nav "Ask" link on this. It is derived from the path
+        # so any /w/{workspace_id}/... page lights it up, and callers holding an
+        # active workspace override it through the kwargs below.
+        "workspace_id": request.path_params.get("workspace_id"),
     }
     context.update(extra)
     return context
@@ -170,11 +174,78 @@ async def dashboard(
     list_workspaces: ListWorkspacesDep,
 ) -> Response:
     workspaces = await list_workspaces.execute(user)
+    return await _dashboard(request, user, workspaces)
+
+
+@router.post("/ui/workspaces", include_in_schema=False)
+async def ui_create_workspace(
+    request: Request,
+    user: CurrentUser,
+    list_workspaces: ListWorkspacesDep,
+    # Defaulted rather than required: Starlette reads an empty form value as an
+    # absent one, so a required field answers a blank submit with a bare JSON 422.
+    # Letting it through puts the blank case in front of the use case, which
+    # refuses it in the user's own words and re-renders this page.
+    name: Annotated[str, Form()] = "",
+) -> Response:
+    """Create a workspace from the form.
+
+    `POST /workspaces` was the only way to make one, so a new account landed on a
+    page reading "Create a workspace to start" with nothing on it to comply with.
+    Plain form POST, no HTMX: the empty state is the first thing anyone sees and it
+    has to work with JavaScript still loading.
+    """
+    try:
+        workspace = await request.app.state.create_workspace.execute(user, name)
+    except ValidationFailed as exc:
+        workspaces = await list_workspaces.execute(user)
+        return await _dashboard(
+            request,
+            user,
+            workspaces,
+            workspace_error=exc.message,
+            workspace_name=name,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    logger.info(
+        "workspace.created",
+        extra={"workspace_id": str(workspace.id), "via": "form"},
+    )
+    # Straight into the new workspace, which is the whole point of making it.
+    return RedirectResponse(f"/w/{workspace.id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+async def _dashboard(
+    request: Request,
+    user: User,
+    workspaces: list[Workspace],
+    *,
+    workspace_error: str | None = None,
+    workspace_name: str = "",
+    status_code: int = 200,
+) -> Response:
     if not workspaces:
-        return _render(request, "dashboard.html", workspaces=[], active=None, documents=None)
+        return _render(
+            request,
+            "dashboard.html",
+            workspaces=[],
+            active=None,
+            documents=None,
+            workspace_error=workspace_error,
+            workspace_name=workspace_name,
+            status_code=status_code,
+        )
     requested = request.query_params.get("workspace")
     active = next((w for w in workspaces if str(w.id) == requested), workspaces[0])
-    return await _workspace_view(request, user, active, workspaces)
+    return await _workspace_view(
+        request,
+        user,
+        active,
+        workspaces,
+        workspace_error=workspace_error,
+        workspace_name=workspace_name,
+        status_code=status_code,
+    )
 
 
 @router.get("/w/{workspace_id}")
@@ -194,7 +265,14 @@ async def workspace_dashboard(
 
 
 async def _workspace_view(
-    request: Request, user: User, active: Workspace, workspaces: list[Workspace]
+    request: Request,
+    user: User,
+    active: Workspace,
+    workspaces: list[Workspace],
+    *,
+    workspace_error: str | None = None,
+    workspace_name: str = "",
+    status_code: int = 200,
 ) -> Response:
     page = await request.app.state.list_documents.execute(active.id, limit=50)
     return _render(
@@ -204,6 +282,11 @@ async def _workspace_view(
         active=active,
         documents=page.items,
         total=page.total,
+        # base.html builds the nav "Ask" link from this.
+        workspace_id=str(active.id),
+        workspace_error=workspace_error,
+        workspace_name=workspace_name,
+        status_code=status_code,
     )
 
 

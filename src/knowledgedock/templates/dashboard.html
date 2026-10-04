@@ -18,6 +18,9 @@
       {% if active %}
         <div class="kd-dash-actions">
           <a class="kd-btn kd-btn-secondary" href="/w/{{ active.id }}/ask">Ask a question</a>
+          <button class="kd-btn kd-btn-secondary" type="button" data-bs-toggle="collapse"
+                  data-bs-target="#kdNewWorkspace" aria-expanded="false"
+                  aria-controls="kdNewWorkspace">New workspace</button>
           <button class="kd-btn kd-btn-primary" data-bs-toggle="modal" data-bs-target="#uploadModal">
             Upload document
           </button>
@@ -38,14 +41,28 @@
     </nav>
     {% endif %}
 
+    {% if workspaces %}
+    <div class="collapse" id="kdNewWorkspace">
+      <div class="kd-card-container">
+        <div class="kd-workspace-create">
+          <h2 class="kd-empty-title">New workspace</h2>
+          {% include "_workspace_form.html" %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     {% if not workspaces %}
       <div class="kd-card-container">
         <div class="kd-empty">
-          <h2 class="kd-empty-title">Nothing here yet</h2>
+          <h2 class="kd-empty-title">Create your first workspace</h2>
           <p class="kd-empty-description">
             A workspace is the boundary everything else lives inside. Documents and
             answers are never shared across workspaces.
           </p>
+          {# Without this the page says "create a workspace to start" and offers no
+             way to comply, which is where a new account gets stranded. #}
+          {% include "_workspace_form.html" %}
         </div>
       </div>
     {% else %}

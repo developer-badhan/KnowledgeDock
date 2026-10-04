@@ -376,6 +376,99 @@ class TestDashboardAccess:
         assert stranger.client.get(f"/w/{ws['id']}").status_code == 404
 
 
+class TestCreateWorkspace:
+    """The dead end this fixes.
+
+    A new account signed in, landed on /app, and was told "Create a workspace to
+    start" by a page whose only button was Sign out. `POST /workspaces` existed and
+    was the sole way to create one, so the whole product was reachable only through
+    a JSON call. These tests exist so the empty state can never again be a dead end.
+    """
+
+    def test_the_empty_state_offers_a_way_to_create_one(self, env, owner):
+        page = owner.client.get("/app")
+
+        assert 'action="/ui/workspaces"' in page.text
+        assert 'name="name"' in page.text
+        assert "Create workspace" in page.text
+
+    def test_creating_from_the_form_lands_in_the_new_workspace(self, env, owner):
+        response = owner.client.post(
+            "/ui/workspaces", data={"name": "Research"}, follow_redirects=False
+        )
+
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/w/")
+
+    def test_the_new_workspace_is_reachable_and_scoped(self, env, owner):
+        owner.client.post("/ui/workspaces", data={"name": "Research"}, follow_redirects=False)
+
+        listed = owner.client.get("/workspaces").json()
+
+        assert [w["name"] for w in listed] == ["Research"]
+        assert owner.client.get(f"/w/{listed[0]['id']}").status_code == 200
+
+    @pytest.mark.parametrize("submitted", ["", "   "])
+    def test_an_empty_name_is_refused_and_explained(self, env, owner, submitted):
+        response = owner.client.post("/ui/workspaces", data={"name": submitted})
+
+        assert response.status_code == 400
+        assert "alert-danger" in response.text
+        # Not a bare JSON 422: a blank submit has to come back as this page.
+        assert "text/html" in response.headers["content-type"]
+        assert "Give the workspace a name" in response.text
+
+    def test_a_refused_name_is_kept_so_it_is_not_retyped(self, env, owner):
+        response = owner.client.post("/ui/workspaces", data={"name": "x" * 81})
+
+        assert response.status_code == 400
+        assert "x" * 81 in response.text
+
+    def test_a_whitespace_padded_name_is_normalised_by_the_use_case(self, env, owner):
+        owner.client.post("/ui/workspaces", data={"name": "  Research  "})
+
+        assert owner.client.get("/workspaces").json()[0]["name"] == "Research"
+
+    def test_somebody_with_a_workspace_can_make_a_second_one(self, env, owner, ws):
+        # Otherwise the absence of a button would have capped every user at one,
+        # forever, with no route out of it.
+        page = owner.client.get(f"/w/{ws['id']}")
+        assert "New workspace" in page.text
+
+        owner.client.post("/ui/workspaces", data={"name": "Second"})
+
+        assert len(owner.client.get("/workspaces").json()) == 2
+
+    def test_the_form_works_without_javascript(self, env, owner):
+        # The empty state is the first thing anybody sees, possibly before the
+        # bundle finishes loading, so it may not depend on HTMX.
+        page = owner.client.get("/app")
+
+        assert "hx-post" not in page.text
+        assert 'method="post"' in page.text
+
+    def test_a_signed_out_visitor_cannot_create_one(self, env):
+        env[0].cookies.clear()
+
+        assert env[0].post("/ui/workspaces", data={"name": "Sneaky"}).status_code in (302, 303, 401)
+
+    def test_the_nav_ask_link_resolves_once_a_workspace_is_active(self, env, owner, ws):
+        # base.html gated the nav "Ask" link on a `workspace_id` that no template
+        # context ever supplied, so it was dead on every page.
+        page = owner.client.get(f"/w/{ws['id']}")
+
+        assert f'href="/w/{ws["id"]}/ask"' in page.text
+        assert "/w//ask" not in page.text
+
+    def test_the_nav_ask_link_is_absent_without_a_workspace(self, env, owner):
+        # There is nothing to ask yet, so the link must not appear and must not
+        # render as a broken path.
+        page = owner.client.get("/app")
+
+        assert ">Ask<" not in page.text
+        assert "/ask" not in page.text
+
+
 class TestUploadScreen:
     def test_the_upload_form_posts_multipart_to_the_ui_endpoint(self, env, owner, ws):
         page = owner.client.get(f"/w/{ws['id']}")

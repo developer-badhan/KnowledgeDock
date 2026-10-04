@@ -1,0 +1,25 @@
+{# The only way to create a workspace from the browser. Kept as a partial because
+   it is needed in two states: alone in the empty state for somebody with nothing,
+   and behind a disclosure for somebody who already has one. Only one ever renders
+   at a time, so the label's `for` target stays unique. #}
+<form method="post" action="/ui/workspaces" class="kd-workspace-form" novalidate>
+  {% if workspace_error %}
+  <div class="alert alert-danger" role="alert">{{ workspace_error }}</div>
+  {% endif %}
+  <div class="kd-form-group">
+    <label class="kd-form-label" for="workspace-name">Workspace name</label>
+    <input
+      class="kd-form-control"
+      type="text"
+      id="workspace-name"
+      name="name"
+      value="{{ workspace_name or '' }}"
+      maxlength="80"
+      placeholder="e.g. Product documentation"
+      autocomplete="off"
+      required
+      autofocus
+    />
+  </div>
+  <button class="kd-btn kd-btn-primary" type="submit">Create workspace</button>
+</form>

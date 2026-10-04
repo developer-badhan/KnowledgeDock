@@ -1269,6 +1269,26 @@ textarea.kd-form-control {
 }
 
 
+/* The create-workspace form. Constrained and centred in the empty state, where
+   it is the page's only call to action, and left-aligned inside the disclosure. */
+.kd-workspace-form {
+  max-width: 26rem;
+  margin: var(--kd-space-6) auto 0;
+  text-align: left;
+}
+
+.kd-workspace-create {
+  padding: var(--kd-space-6);
+}
+
+.kd-workspace-create .kd-workspace-form {
+  margin-left: 0;
+}
+
+.kd-workspace-create .kd-empty-title {
+  margin-bottom: 0;
+}
+
 .kd-empty-title {
   font-size: var(--kd-text-lg);
   font-weight: 600;
