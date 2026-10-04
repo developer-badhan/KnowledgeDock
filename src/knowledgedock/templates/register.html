@@ -2,11 +2,10 @@
 
 {% block content %}
 <div class="kd-auth-wrap">
-  <div class="kd-card kd-auth-card">
+  <div class="kd-auth-card">
     <div class="kd-auth-head">
-      <span class="kd-eyebrow">Get started</span>
       <h1 class="kd-auth-title">Create your account</h1>
-      <p class="kd-auth-sub">Then upload a document and ask it questions.</p>
+      <p class="kd-auth-subtitle">Then upload a document and ask it questions.</p>
     </div>
 
     {% if error %}
@@ -14,10 +13,10 @@
     {% endif %}
 
     <form method="post" action="/ui/register" novalidate>
-      <div class="mb-3">
-        <label class="form-label" for="email">Email</label>
+      <div class="kd-form-group">
+        <label class="kd-form-label" for="email">Email</label>
         <input
-          class="form-control"
+          class="kd-form-control"
           type="email"
           id="email"
           name="email"
@@ -28,10 +27,10 @@
         />
       </div>
 
-      <div class="mb-3">
-        <label class="form-label" for="password">Password</label>
+      <div class="kd-form-group">
+        <label class="kd-form-label" for="password">Password</label>
         <input
-          class="form-control"
+          class="kd-form-control"
           type="password"
           id="password"
           name="password"
@@ -39,10 +38,10 @@
           minlength="8"
           required
         />
-        <div class="form-text">At least {{ password_min_length }} characters.</div>
+        <p class="kd-form-hint">At least {{ password_min_length }} characters.</p>
       </div>
 
-      <button class="kd-btn-primary w-100" type="submit">Create account</button>
+      <button class="kd-btn kd-btn-primary w-100" type="submit">Create account</button>
     </form>
 
     <p class="kd-auth-alt">

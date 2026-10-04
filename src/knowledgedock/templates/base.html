@@ -1,12 +1,13 @@
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{{ app_name }} — AI Knowledge Retrieval</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>{{ app_name or "KnowledgeDock" }} — AI Knowledge Retrieval</title>
     <meta
       name="description"
-      content="{{ app_name }} is an API-first AI knowledge retrieval application. Upload documents, search semantically, and ask questions answered with retrieved context."
+      content="{{ app_name or "KnowledgeDock" }} is an API-first AI knowledge retrieval application. Upload documents, search semantically, and ask questions answered with retrieved context."
     />
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
     <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png" />
@@ -24,52 +25,109 @@
       crossorigin="anonymous"
     />
     <link rel="stylesheet" href="/static/app.css" />
+    {# Runs before first paint so a dark-mode visitor never sees a white flash.
+       Deliberately inline and dependency-free: it has to beat the stylesheet,
+       which an external deferred file cannot. #}
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("kd-theme");
+          var theme =
+            stored === "light" || stored === "dark"
+              ? stored
+              : window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light";
+          document.documentElement.setAttribute("data-bs-theme", theme);
+        } catch (e) {
+          document.documentElement.setAttribute("data-bs-theme", "light");
+        }
+      })();
+    </script>
     <script
       src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"
       crossorigin="anonymous"
     ></script>
   </head>
   <body>
-    <nav class="kd-navbar" id="kdNavbar">
-      <div class="container d-flex align-items-center">
+    {# The auth routes render these pages without app_name/version/workspace in
+       their context, and the dashboard and ask pages carry the workspace as
+       `active` rather than `active_workspace_id`, so both are resolved here
+       once. Supplying the variable properly belongs in the handlers, which are
+       off-limits here. #}
+    {% set brand = app_name or "KnowledgeDock" %}
+    {% set docs_ok = is_production is defined and not is_production %}
+    {% set workspace_id =
+        active_workspace_id if active_workspace_id is defined and active_workspace_id
+        else (active.id if active is defined and active else none) %}
+
+    <a class="visually-hidden-focusable" href="#main">Skip to content</a>
+
+    <nav class="kd-navbar" id="kdNavbar" aria-label="Main">
+      <div class="container d-flex align-items-center justify-content-between">
         <a class="kd-brand" href="/">
-          <img src="/static/logo.png" alt="{{ app_name }} logo" class="kd-brand-logo" />
-          <span class="kd-brand-name">{{ app_name }}</span>
-          <span class="kd-version">v{{ version }}</span>
+          <img src="/static/logo.png" alt="" width="32" height="32" />
+          <span class="kd-brand-name">{{ brand }}</span>
+          {% if version %}<span class="kd-version">v{{ version }}</span>{% endif %}
         </a>
         <div class="kd-nav-links">
-          <a href="#features">Features</a>
-          <a href="#how-it-works">How it works</a>
-          <a href="#stack">Stack</a>
+          <a class="kd-nav-link" href="/">Home</a>
           {% if request.state.user %}
+          <a class="kd-nav-link" href="/app">Dashboard</a>
+          {% if workspace_id %}
+          <a class="kd-nav-link" href="/w/{{ workspace_id }}/ask">Ask</a>
+          {% endif %}
           <span class="kd-nav-user" title="{{ request.state.user.email }}">
             {{ request.state.user.email }}
           </span>
           <form method="post" action="/ui/logout" class="d-inline">
-            <button class="kd-nav-cta kd-btn-ghost" type="submit">Sign out</button>
+            <button class="kd-btn kd-btn-ghost kd-btn-sm" type="submit">Sign out</button>
           </form>
           {% else %}
-          <a href="/login">Sign in</a>
-          {% if not is_production %}
-          <a href="/api/docs" class="kd-nav-cta">API Docs</a>
+          <a class="kd-nav-link" href="/login">Sign in</a>
+          <a class="kd-nav-link" href="/register">Sign up</a>
+          {% if docs_ok %}
+          <a class="kd-nav-cta" href="/api/docs">API Docs</a>
           {% endif %}
           {% endif %}
+          <button type="button" class="kd-theme-toggle" id="kdThemeToggle"
+                  aria-label="Switch to dark theme" aria-pressed="false">
+            <span id="kdThemeIcon" aria-hidden="true">☾</span>
+          </button>
         </div>
       </div>
     </nav>
 
-    <main>{% block content %}{% endblock %}</main>
+    <main id="main">{% block content %}{% endblock %}</main>
 
     <footer class="kd-footer">
-      <div class="container d-flex flex-column flex-md-row align-items-center justify-content-between gap-3">
-        <div class="d-flex align-items-center gap-2">
-          <img src="/static/logo.png" alt="{{ app_name }} logo" class="kd-footer-logo" />
-          <span class="kd-footer-name">{{ app_name }}</span>
-          <span class="text-body-secondary">· AI knowledge retrieval</span>
+      <div class="container">
+        <div class="kd-footer-main">
+          <div class="d-flex align-items-center gap-2">
+            <img src="/static/logo.png" alt="" width="28" height="28" />
+            <span class="kd-footer-name">{{ brand }}</span>
+          </div>
+          <div class="kd-footer-links">
+            <a class="kd-footer-link" href="/">Home</a>
+            {% if request.state.user %}
+            <a class="kd-footer-link" href="/app">Dashboard</a>
+            {% if workspace_id %}
+            <a class="kd-footer-link" href="/w/{{ workspace_id }}/ask">Ask</a>
+            {% endif %}
+            {% else %}
+            <a class="kd-footer-link" href="/login">Sign in</a>
+            <a class="kd-footer-link" href="/register">Sign up</a>
+            {% endif %}
+            {% if docs_ok %}
+            <a class="kd-footer-link" href="/api/docs">API Docs</a>
+            {% endif %}
+          </div>
         </div>
-        <p class="text-body-secondary mb-0 small">
-          FastAPI · MongoDB Vector Search · RAG — built as a backend engineering showcase.
-        </p>
+        <div class="kd-footer-bottom">
+          <p class="kd-footer-copy">
+            {{ brand }} — FastAPI · MongoDB Vector Search · RAG — built as a backend engineering showcase.
+          </p>
+        </div>
       </div>
     </footer>
 

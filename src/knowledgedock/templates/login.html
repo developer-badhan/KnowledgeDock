@@ -2,11 +2,10 @@
 
 {% block content %}
 <div class="kd-auth-wrap">
-  <div class="kd-card kd-auth-card">
+  <div class="kd-auth-card">
     <div class="kd-auth-head">
-      <span class="kd-eyebrow">Welcome back</span>
       <h1 class="kd-auth-title">Sign in</h1>
-      <p class="kd-auth-sub">Access your workspaces and knowledge base.</p>
+      <p class="kd-auth-subtitle">Access your workspaces and knowledge base.</p>
     </div>
 
     {% if error %}
@@ -17,10 +16,10 @@
     {% endif %}
 
     <form method="post" action="/ui/login" novalidate>
-      <div class="mb-3">
-        <label class="form-label" for="email">Email</label>
+      <div class="kd-form-group">
+        <label class="kd-form-label" for="email">Email</label>
         <input
-          class="form-control"
+          class="kd-form-control"
           type="email"
           id="email"
           name="email"
@@ -31,10 +30,10 @@
         />
       </div>
 
-      <div class="mb-3">
-        <label class="form-label" for="password">Password</label>
+      <div class="kd-form-group">
+        <label class="kd-form-label" for="password">Password</label>
         <input
-          class="form-control"
+          class="kd-form-control"
           type="password"
           id="password"
           name="password"
@@ -43,7 +42,7 @@
         />
       </div>
 
-      <button class="kd-btn-primary w-100" type="submit">Sign in</button>
+      <button class="kd-btn kd-btn-primary w-100" type="submit">Sign in</button>
     </form>
 
     <p class="kd-auth-alt">

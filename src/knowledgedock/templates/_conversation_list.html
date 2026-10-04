@@ -1,19 +1,20 @@
 {% if conversations %}
-  <ul class="list-unstyled kd-conversations mb-0">
+  <ul class="kd-conversation-list">
     {% for conversation in conversations %}
-      <li class="kd-conversation">
-        <a href="/w/{{ active_workspace_id }}/ask?conversation_id={{ conversation.id }}">
+      <li class="kd-conversation-item">
+        <a href="/w/{{ active_workspace_id }}/ask?conversation_id={{ conversation.id }}"
+           class="kd-conversation-link">
           {{ conversation.created_at | datetimeformat }}
         </a>
         <form method="post"
               action="/ui/workspaces/{{ active_workspace_id }}/conversations/{{ conversation.id }}/delete"
               class="d-inline">
-          <button class="kd-btn-ghost kd-btn-small" type="submit"
+          <button class="kd-conversation-delete" type="submit"
                   aria-label="Delete conversation">×</button>
         </form>
       </li>
     {% endfor %}
   </ul>
 {% else %}
-  <p class="text-body-secondary small mb-0">No conversations yet.</p>
+  <p class="kd-sidebar-hint">No conversations yet.</p>
 {% endif %}

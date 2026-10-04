@@ -1,5 +1,5 @@
-<div class="modal fade" id="uploadModal" tabindex="-1" aria-labelledby="uploadTitle">
-  <div class="modal-dialog">
+<div class="modal fade" id="uploadModal" tabindex="-1" aria-labelledby="uploadTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
       <form class="modal-body"
             method="post"
@@ -10,8 +10,8 @@
             hx-target="#uploadFeedback"
             hx-swap="innerHTML"
             hx-indicator="#uploadSpinner">
-        <h2 class="h5" id="uploadTitle">Upload a document</h2>
-        <p class="text-body-secondary small">
+        <h2 class="modal-title" id="uploadTitle">Upload a document</h2>
+        <p class="kd-modal-sub">
           Accepted: PDF, Word, HTML, Markdown and plain text. Re-uploading identical
           bytes replaces the existing document rather than duplicating it.
         </p>
@@ -19,18 +19,18 @@
           <input type="file" id="kdFile" name="file" required
                  accept=".pdf,.docx,.html,.htm,.md,.txt,.text" />
           <span class="kd-dropzone-label">Drop a file here, or choose one</span>
-          <span class="kd-dropzone-hint text-body-secondary small" id="kdFileName"></span>
+          <span class="kd-dropzone-hint" id="kdFileName"></span>
         </label>
-        <div id="uploadSpinner" class="kd-spinner" hidden>
+        <div id="uploadSpinner" class="kd-spinner htmx-indicator">
           <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
           Uploading…
         </div>
         <div id="uploadFeedback" aria-live="polite"></div>
-        <div class="d-flex justify-content-end gap-2 mt-3">
-          <button type="button" class="kd-btn-ghost" data-bs-dismiss="modal">Close</button>
+        <div class="kd-modal-actions">
+          <button type="button" class="kd-btn kd-btn-ghost" data-bs-dismiss="modal">Close</button>
           {# Not disabled, so a plain form post still works: the visible spinner is
              driven by JS that may be blocked. #}
-          <button type="submit" class="kd-btn-primary">Upload</button>
+          <button type="submit" class="kd-btn kd-btn-primary">Upload</button>
         </div>
       </form>
     </div>

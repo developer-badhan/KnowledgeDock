@@ -17,17 +17,20 @@
     {% endif %}
   </td>
   <td><span class="kd-badge kd-badge-{{ document.status.value }}">{{ document.status.value }}</span></td>
-  <td class="text-body-secondary">{{ document.size_bytes | filesize }}</td>
+  <td class="kd-doc-size">{{ document.size_bytes | filesize }}</td>
   <td class="kd-doc-error">
     {% if document.processing_error %}
       <span title="{{ document.processing_error }}">{{ document.processing_error }}</span>
     {% endif %}
   </td>
   <td class="text-end">
+    {# The confirm lives in app.js as a delegated submit handler. An inline
+       onsubmit would be the only inline handler left in the app and would block
+       a strict Content-Security-Policy without the strict-dynamic escape hatch. #}
     <form method="post"
           action="/ui/workspaces/{{ active.id }}/documents/{{ document.id }}/delete"
-          onsubmit="return confirm('Delete {{ document.filename | e }}? This cannot be undone.');">
-      <button class="kd-btn-ghost" type="submit">Delete</button>
+          data-confirm-delete="Delete {{ document.filename | e }}? This cannot be undone.">
+      <button class="kd-btn kd-btn-ghost kd-btn-sm" type="submit">Delete</button>
     </form>
   </td>
 </tr>

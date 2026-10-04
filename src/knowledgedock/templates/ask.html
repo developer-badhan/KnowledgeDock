@@ -5,17 +5,29 @@
     <div class="kd-dash-head">
       <div>
         <h1 class="kd-page-title">Ask {{ active.name }}</h1>
-        <p class="text-body-secondary mb-0">
+        <p class="kd-page-subtitle">
           Answers come only from this workspace's documents. If nothing matches,
           it says so rather than guessing.
         </p>
       </div>
-      <a class="kd-btn-ghost" href="/w/{{ active.id }}">Back to documents</a>
+      <div class="kd-dash-actions">
+        <a class="kd-btn kd-btn-secondary" href="/w/{{ active.id }}">Back to documents</a>
+      </div>
     </div>
 
-    <div class="row g-4">
-      <div class="col-lg-8">
-        <form class="kd-ask-form"
+    <div class="kd-ask-grid">
+      <aside class="kd-sidebar" aria-labelledby="kdConversationsTitle">
+        <h2 class="kd-sidebar-title" id="kdConversationsTitle">Conversations</h2>
+        <div id="kdConversations"
+             hx-get="/ui/workspaces/{{ active.id }}/conversations"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+          <p class="kd-sidebar-hint">Loading…</p>
+        </div>
+      </aside>
+
+      <div class="kd-ask-main">
+        <form class="kd-question-form"
               method="post"
               action="/ui/workspaces/{{ active.id }}/ask"
               id="kdAskForm"
@@ -26,38 +38,42 @@
           {% if conversation_id %}
             <input type="hidden" name="conversation_id" value="{{ conversation_id }}" />
           {% endif %}
+          <div class="kd-question-form-header">
+            <h2 class="kd-question-form-title">Your question</h2>
+            <p class="kd-question-form-desc" id="kdAskHint">
+              {% if conversation_id %}Continuing this conversation.{% else %}Starts a new conversation.{% endif %}
+            </p>
+          </div>
           <label class="visually-hidden" for="kdQuestion">Your question</label>
-          <textarea class="form-control kd-question"
+          <textarea class="kd-form-control kd-question-textarea"
                     id="kdQuestion"
                     name="question"
                     rows="3"
                     required
                     maxlength="2000"
+                    aria-describedby="kdAskHint"
                     placeholder="e.g. When does payroll run, and what locks beforehand?"></textarea>
-          <div class="d-flex justify-content-between align-items-center mt-2">
-            <span class="text-body-secondary small" id="kdAskHint">
-              {% if conversation_id %}Continuing this conversation.{% else %}Starts a new conversation.{% endif %}
-            </span>
-            <button class="kd-btn-primary" type="submit">Ask</button>
+          <div class="kd-question-actions">
+            <button class="kd-btn kd-btn-primary" type="submit">Ask</button>
+            <span class="kd-question-hint">Enter to ask · Shift+Enter for a new line</span>
           </div>
-          <div id="kdAskSpinner" class="kd-spinner" hidden>
+          <div id="kdAskSpinner" class="kd-spinner htmx-indicator">
             <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
             Searching and answering…
           </div>
         </form>
 
-        <div id="kdAnswer" aria-live="polite">
-          {% if turns %}{% for turn in turns %}{% include "_turn.html" %}{% endfor %}{% endif %}
-        </div>
-      </div>
-
-      <div class="col-lg-4">
-        <h2 class="h6 text-body-secondary">Conversations</h2>
-        <div id="kdConversations"
-             hx-get="/ui/workspaces/{{ active.id }}/conversations"
-             hx-trigger="load"
-             hx-swap="innerHTML">
-          <p class="text-body-secondary small">Loading…</p>
+        <div id="kdAnswer" class="kd-conversation-history" aria-live="polite"
+             aria-label="Answers">
+          {% if turns %}{% for turn in turns %}{% include "_turn.html" %}{% endfor %}
+          {% else %}
+            <div class="kd-empty">
+              <h2 class="kd-empty-title">No questions yet</h2>
+              <p class="kd-empty-description">
+                Ask something above. Every answer cites the chunks it was drawn from.
+              </p>
+            </div>
+          {% endif %}
         </div>
       </div>
     </div>
