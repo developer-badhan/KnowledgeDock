@@ -33,6 +33,9 @@ from knowledgedock.infrastructure.repositories.conversation_repository import (
 from knowledgedock.infrastructure.repositories.document_repository import (
     InMemoryDocumentRepository,
 )
+from knowledgedock.infrastructure.repositories.usage_repository import (
+    InMemoryAIUsageRepository,
+)
 from knowledgedock.infrastructure.repositories.user_repository import InMemoryUserRepository
 from knowledgedock.infrastructure.repositories.workspace_repository import (
     InMemoryWorkspaceRepository,
@@ -46,7 +49,11 @@ ENVIRONMENT=test
 SECRET_KEY=test-secret-key-long-enough-to-pass-validation-0123456789
 MONGODB_URI=mongodb://localhost:27017
 MONGODB_DB=knowledgedock_test
-AI_PROVIDER=null
+# Declared as gemini even though every test injects stub providers. The null
+# providers are refused by /search and /query, because answering from hash-derived
+# vectors would return confident nonsense; tests that want null mode build a
+# settings object with it explicitly.
+AI_PROVIDER=gemini
 GEMINI_API_KEY=test-key
 GEMINI_EMBEDDING_TASK_DOCUMENT=RETRIEVAL_DOCUMENT
 GEMINI_EMBEDDING_TASK_QUERY=RETRIEVAL_QUERY
@@ -259,6 +266,8 @@ def _build_app(
     embeddings=None,
     llm=None,
     conversations=None,
+    usage=None,
+    clock=None,
     processing_enabled=False,
 ):
     return create_app(
@@ -272,6 +281,8 @@ def _build_app(
         embeddings=embeddings or NullEmbeddingProvider(),
         llm=llm or NullLLMProvider(),
         conversation_repository=conversations or InMemoryConversationRepository(),
+        usage_repository=usage or InMemoryAIUsageRepository(),
+        clock=clock,
         processing_enabled=processing_enabled,
     )
 

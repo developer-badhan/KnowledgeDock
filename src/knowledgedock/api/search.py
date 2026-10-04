@@ -24,7 +24,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
-from knowledgedock.api.dependencies import require_workspace_access
+from knowledgedock.api.dependencies import (
+    enforce_rate_limit,
+    require_configured_ai,
+    require_workspace_access,
+)
 from knowledgedock.application.retrieval.search import SemanticSearch
 from knowledgedock.domain.retrieval import SearchOutcome
 from knowledgedock.domain.workspaces import WorkspaceAccess
@@ -32,6 +36,16 @@ from knowledgedock.domain.workspaces import WorkspaceAccess
 router = APIRouter(prefix="/workspaces/{workspace_id}/search", tags=["search"])
 
 Access = Annotated[WorkspaceAccess, Depends(require_workspace_access)]
+# Checked before the workspace lookup: a request that cannot be answered should
+# not spend effort proving the caller may ask.
+AIConfigured = Annotated[None, Depends(require_configured_ai)]
+
+
+def _limit(request: Request) -> None:
+    return enforce_rate_limit(request, route="ai")
+
+
+AIQuota = Annotated[None, Depends(_limit)]
 
 
 def get_semantic_search(request: Request) -> SemanticSearch:
@@ -67,6 +81,12 @@ class SearchResponse(BaseModel):
 
 
 @router.post("", response_model=SearchResponse)
-async def search(access: Access, use_case: SearchDep, payload: SearchRequest) -> SearchResponse:
+async def search(
+    access: Access,
+    configured: AIConfigured,
+    quota: AIQuota,
+    use_case: SearchDep,
+    payload: SearchRequest,
+) -> SearchResponse:
     outcome = await use_case.execute(access.workspace_id, payload.query, limit=payload.limit)
     return SearchResponse.of(outcome)

@@ -14,7 +14,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from pydantic import BaseModel, Field, field_validator
 
-from knowledgedock.api.dependencies import get_current_user, require_workspace_access
+from knowledgedock.api.dependencies import (
+    enforce_rate_limit,
+    get_current_user,
+    require_configured_ai,
+    require_workspace_access,
+)
 from knowledgedock.application.rag.answer_question import (
     AskQuestion,
     DeleteConversation,
@@ -29,6 +34,14 @@ from knowledgedock.domain.workspaces import WorkspaceAccess
 router = APIRouter(prefix="/workspaces/{workspace_id}", tags=["rag"])
 
 Access = Annotated[WorkspaceAccess, Depends(require_workspace_access)]
+AIConfigured = Annotated[None, Depends(require_configured_ai)]
+
+
+def _limit(request: Request) -> None:
+    return enforce_rate_limit(request, route="ai")
+
+
+AIQuota = Annotated[None, Depends(_limit)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
@@ -151,7 +164,12 @@ class MessageResponse(BaseModel):
 
 @router.post("/query", response_model=AnswerResponse)
 async def ask(
-    access: Access, user: CurrentUser, use_case: AskDep, payload: AskRequest
+    access: Access,
+    configured: AIConfigured,
+    quota: AIQuota,
+    user: CurrentUser,
+    use_case: AskDep,
+    payload: AskRequest,
 ) -> AnswerResponse:
     answer = await use_case.execute(
         access.workspace_id,
