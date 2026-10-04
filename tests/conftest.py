@@ -9,6 +9,8 @@ verify HTTP contract and configuration; the deployment smoke test covers Atlas.
 
 from __future__ import annotations
 
+import atexit
+import shutil
 import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -287,13 +289,38 @@ def _build_app(
     )
 
 
+_STORAGE_ROOTS: list[str] = []
+
+
 def make_storage_root() -> str:
     """A private upload directory per app instance.
 
     Tests share one process, so a fixed path would let one test's upload appear
     in another's assertions.
+
+    `mkdtemp` creates a real directory in /tmp and nothing removed it, so every
+    run leaked over a thousand of them until /tmp filled with `kd-test-uploads-*`.
+    Each root is registered for teardown by `_purge_storage_roots`.
     """
-    return tempfile.mkdtemp(prefix="kd-test-uploads-")
+    root = tempfile.mkdtemp(prefix="kd-test-uploads-")
+    _STORAGE_ROOTS.append(root)
+    return root
+
+
+def _purge_storage_roots() -> None:
+    while _STORAGE_ROOTS:
+        shutil.rmtree(_STORAGE_ROOTS.pop(), ignore_errors=True)
+
+
+# atexit rather than only `pytest_sessionfinish`: several test modules build
+# their storage root at import time, so an invocation that collects or errors
+# before the session hooks run would still leak. atexit fires on every exit path.
+atexit.register(_purge_storage_roots)
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    """Remove every storage root this session created."""
+    _purge_storage_roots()
 
 
 def _client(
