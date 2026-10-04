@@ -380,6 +380,7 @@ def create_app(
             limit=settings.ai_rate_limit_per_minute,
             window_seconds=60.0,
             clock=clock,
+            max_keys=settings.rate_limit_max_keys,
         )
 
         # The vector index is created here so a fresh Atlas cluster needs no

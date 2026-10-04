@@ -111,7 +111,7 @@ class AuthenticateUser:
         if user is None:
             # Still spend the hashing cost. Returning immediately would make the
             # response time reveal whether the address is registered.
-            self._hasher.verify(password, DUMMY_HASH)
+            self._hasher.verify(password, _dummy_hash_value())
             raise AuthenticationFailed()
 
         if not self._hasher.verify(password, user.password_hash):
@@ -264,5 +264,12 @@ class ResolveCurrentUser:
 # A genuine argon2id hash of a value nobody can guess. It exists so a login for
 # an unregistered address performs the same hashing work as one with a wrong
 # password; returning early would make response time reveal whether an address is
-# registered. Costs one hash at import, not one per request.
-DUMMY_HASH = PasswordHasher().hash("knowledgedock-timing-equaliser")
+# registered. Lazily initialized to avoid import-time Argon2id cost.
+_dummy_hash: str | None = None
+
+
+def _dummy_hash_value() -> str:
+    global _dummy_hash
+    if _dummy_hash is None:
+        _dummy_hash = PasswordHasher().hash("knowledgedock-timing-equaliser")
+    return _dummy_hash
