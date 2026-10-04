@@ -105,6 +105,7 @@ class Settings:
     rate_limit_per_minute: int
     rate_limit_query_per_minute: int
     rate_limit_max_keys: int
+    auth_rate_limit_per_minute: int
 
     # -- Background processing ---------------------------------------------
     processing_max_attempts: int
@@ -158,6 +159,8 @@ class Settings:
             raise ValueError("AI_RATE_LIMIT_PER_MINUTE cannot be negative")
         if self.rate_limit_max_keys <= 0:
             raise ValueError("RATE_LIMIT_MAX_KEYS must be positive")
+        if self.auth_rate_limit_per_minute < 0:
+            raise ValueError("AUTH_RATE_LIMIT_PER_MINUTE cannot be negative")
         if not self.allowed_content_types:
             raise ValueError("ALLOWED_CONTENT_TYPES must list at least one content type")
 
@@ -274,6 +277,11 @@ def load_settings(source: Any | None = None) -> Settings:
         rate_limit_per_minute=optional("RATE_LIMIT_PER_MINUTE", 60, int),
         rate_limit_query_per_minute=optional("RATE_LIMIT_QUERY_PER_MINUTE", 10, int),
         rate_limit_max_keys=optional("RATE_LIMIT_MAX_KEYS", 10000, int),
+        # Credential endpoints, per client IP. Ten a minute is far above how fast
+        # anyone signs in, and low enough to bound a password guess: every login
+        # attempt costs an Argon2id hash, which is deliberately slow, so the
+        # limiter's job here is to bound server work rather than to count guesses.
+        auth_rate_limit_per_minute=optional("AUTH_RATE_LIMIT_PER_MINUTE", 10, int),
         processing_max_attempts=optional("PROCESSING_MAX_ATTEMPTS", 3, int),
         processing_stale_after_minutes=optional("PROCESSING_STALE_AFTER_MINUTES", 30, int),
         # How often the worker looks for PENDING documents. Render free tier has no

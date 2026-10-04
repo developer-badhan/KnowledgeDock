@@ -383,6 +383,15 @@ def create_app(
             max_keys=settings.rate_limit_max_keys,
         )
 
+        # The same window over the credential endpoints, keyed by client address
+        # instead of by principal because a caller signing in has no principal yet.
+        app.state.auth_rate_limiter = RateLimiter(
+            limit=settings.auth_rate_limit_per_minute,
+            window_seconds=60.0,
+            clock=clock,
+            max_keys=settings.rate_limit_max_keys,
+        )
+
         # The vector index is created here so a fresh Atlas cluster needs no
         # manual step. `database()` raises when there is no client at all, and
         # index creation can fail for many reasons; neither may stop startup.

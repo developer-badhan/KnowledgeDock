@@ -715,3 +715,211 @@ class TestSessionIssuedAtIsNotValidated:
             uuid4(), 1
         )
         assert self._service().decode_session(token) is None
+
+
+class TestAuthRateLimit:
+    """The credential limiter, which exists for abuse rather than quota.
+
+    `enforce_rate_limit` covers provider quota and says so in its refusal. These
+    tests pin the separate concern: that guessing a password, or signing up a
+    million accounts, or flooding a mailbox with reset mail, is bounded per caller
+    -- and, just as importantly, that the limiter did not spread to the routes
+    decision 60 deliberately left alone.
+    """
+
+    LIMIT = 3
+
+    @pytest.fixture
+    def limited(self, settings):
+        import dataclasses
+
+        from knowledgedock.infrastructure.repositories.user_repository import (
+            InMemoryUserRepository,
+        )
+        from tests.conftest import _build_app
+
+        app = _build_app(
+            dataclasses.replace(settings, auth_rate_limit_per_minute=self.LIMIT),
+            InMemoryUserRepository(),
+            workspaces=None,
+        )
+        with TestClient(app, raise_server_exceptions=False) as client:
+            yield client
+
+    def _attempts(self, client: TestClient, count: int) -> list[int]:
+        return [
+            client.post(
+                "/ui/login",
+                data={"email": "ada@example.com", "password": "wrong-password"},
+                follow_redirects=False,
+            ).status_code
+            for _ in range(count)
+        ]
+
+    def test_attempts_past_the_limit_are_refused(self, limited: TestClient) -> None:
+        statuses = self._attempts(limited, self.LIMIT + 1)
+
+        assert statuses[: self.LIMIT] == [400] * self.LIMIT
+        assert statuses[self.LIMIT] == 429
+
+    def test_the_refusal_advertises_retry_after(self, limited: TestClient) -> None:
+        self._attempts(limited, self.LIMIT)
+
+        response = limited.post("/ui/login", data={"email": "ada@example.com", "password": "wrong"})
+
+        assert int(response.headers["retry-after"]) >= 1
+
+    def test_the_refusal_is_not_the_provider_quota_message(self, limited: TestClient) -> None:
+        # Telling someone who mistyped a password that Gemini's free tier is rate
+        # limited would be both false and baffling.
+        self._attempts(limited, self.LIMIT)
+
+        body = limited.post(
+            "/ui/login", data={"email": "ada@example.com", "password": "wrong"}
+        ).text
+
+        assert "Gemini" not in body
+        assert "free tier" not in body
+
+    def test_a_correct_password_is_refused_once_the_budget_is_gone(
+        self, limited: TestClient
+    ) -> None:
+        # The limiter counts attempts, not failures, so the check runs before the
+        # hash. That is deliberate: it bounds the work rather than merely the
+        # wrong guesses, and it means the refusal cannot be used to tell a
+        # registered address from an unregistered one.
+        limited.post("/ui/register", data={"email": "ada@example.com", "password": PASSWORD})
+        limited.post("/ui/login", data={"email": "ada@example.com", "password": PASSWORD})
+        limited.post("/ui/login", data={"email": "ada@example.com", "password": "wrong"})
+        limited.post("/ui/login", data={"email": "ada@example.com", "password": "wrong"})
+
+        response = limited.post(
+            "/ui/login", data={"email": "ada@example.com", "password": PASSWORD}
+        )
+
+        assert response.status_code == 429
+
+    def test_the_json_and_form_surfaces_share_one_budget(self, limited: TestClient) -> None:
+        # Otherwise alternating between them buys twice the attempts for free.
+        mixed = [
+            limited.post(
+                "/auth/login", json={"email": "ada@example.com", "password": "wrong"}
+            ).status_code
+            for _ in range(self.LIMIT)
+        ]
+        # 401 here, 400 on the form: the surfaces report failure differently and
+        # must still have been spending one budget between them.
+        assert mixed == [401] * self.LIMIT
+
+        response = limited.post("/ui/login", data={"email": "ada@example.com", "password": "w"})
+
+        assert response.status_code == 429
+
+    def test_one_route_cannot_exhaust_another(self, limited: TestClient) -> None:
+        # Exhausting sign-in must not lock anyone out of requesting a reset link.
+        self._attempts(limited, self.LIMIT + 1)
+
+        assert (
+            limited.post(
+                "/ui/password-reset/request",
+                data={"email": "ada@example.com"},
+                follow_redirects=False,
+            ).status_code
+            == 200
+        )
+
+    def test_registration_is_bounded(self, limited: TestClient) -> None:
+        statuses = [
+            limited.post(
+                "/ui/register",
+                data={"email": f"user{i}@example.com", "password": PASSWORD},
+                follow_redirects=False,
+            ).status_code
+            for i in range(self.LIMIT + 1)
+        ]
+
+        assert statuses[: self.LIMIT] == [303] * self.LIMIT
+        assert statuses[self.LIMIT] == 429
+
+    def test_reset_confirmation_is_bounded(self, limited: TestClient) -> None:
+        # The token is a SHA-256 digest, so guessing it is hopeless -- but the
+        # endpoint still costs a lookup per attempt and deserves the same bound.
+        statuses = [
+            limited.post(
+                "/ui/password-reset/confirm",
+                data={
+                    "token": f"deadbeef{i}",
+                    "new_password": PASSWORD,
+                    "confirm_password": PASSWORD,
+                },
+            ).status_code
+            for i in range(self.LIMIT + 1)
+        ]
+
+        assert statuses[: self.LIMIT] == [400] * self.LIMIT
+        assert statuses[self.LIMIT] == 429
+
+    def test_assets_and_health_are_not_limited(self, limited: TestClient) -> None:
+        # Decision 60's stated reason for scoping the quota limiter was that a
+        # blanket limit would throttle assets and the liveness probe, turning a
+        # protective limiter into an outage. The auth limiter must not repeat that.
+        for _ in range(self.LIMIT + 5):
+            assert limited.get("/health").status_code == 200
+            assert limited.get("/static/app.css").status_code == 200
+
+    def test_the_pages_stay_reachable(self, limited: TestClient) -> None:
+        # A refused POST must not lock the user out of the form that would fix it.
+        self._attempts(limited, self.LIMIT + 1)
+
+        assert limited.get("/login").status_code == 200
+        assert limited.get("/forgot-password").status_code == 200
+
+    def test_separate_addresses_have_separate_budgets(self, settings) -> None:
+        import dataclasses
+
+        from knowledgedock.infrastructure.repositories.user_repository import (
+            InMemoryUserRepository,
+        )
+        from tests.conftest import _build_app
+
+        # The whole point of keying on the address: one abuser must not be able to
+        # lock out everyone else. `TestClient(client=...)` is how the ASGI scope's
+        # peer address is set, and `--proxy-headers` is what fills it from
+        # X-Forwarded-For in production.
+        app = _build_app(
+            dataclasses.replace(settings, auth_rate_limit_per_minute=self.LIMIT),
+            InMemoryUserRepository(),
+            workspaces=None,
+        )
+        with TestClient(app, client=("198.51.100.7", 5000)) as attacker:
+            for _ in range(self.LIMIT):
+                attacker.post("/ui/login", data={"email": "a@b.co", "password": "wrong"})
+            blocked = attacker.post(
+                "/ui/login", data={"email": "a@b.co", "password": "wrong"}
+            ).status_code
+
+        with TestClient(app, client=("203.0.113.9", 5000)) as bystander:
+            allowed = bystander.post(
+                "/ui/login", data={"email": "a@b.co", "password": "wrong"}
+            ).status_code
+
+        assert blocked == 429
+        assert allowed == 400
+
+    def test_a_zero_limit_disables_it(self, settings) -> None:
+        import dataclasses
+
+        from knowledgedock.infrastructure.repositories.user_repository import (
+            InMemoryUserRepository,
+        )
+        from tests.conftest import _build_app
+
+        app = _build_app(
+            dataclasses.replace(settings, auth_rate_limit_per_minute=0),
+            InMemoryUserRepository(),
+            workspaces=None,
+        )
+        with TestClient(app) as client:
+            statuses = self._attempts(client, self.LIMIT + 5)
+
+        assert set(statuses) == {400}

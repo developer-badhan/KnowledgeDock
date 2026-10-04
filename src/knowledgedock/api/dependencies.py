@@ -23,7 +23,7 @@ from knowledgedock.domain.errors import (
 )
 from knowledgedock.domain.users import User
 from knowledgedock.domain.workspaces import WorkspaceAccess
-from knowledgedock.infrastructure.rate_limit import principal_key
+from knowledgedock.infrastructure.rate_limit import client_key, principal_key
 
 SESSION_COOKIE_NAME = "kd_session"
 # Cross-site POSTs are exactly what login and logout are, so every cookie is
@@ -182,5 +182,35 @@ def enforce_rate_limit(request: Request, route: str) -> None:
         raise RateLimited(
             "Too many requests for this workspace. The AI provider's free tier is "
             "rate limited, so the limit protects everyone's quota.",
+            detail=f"retry_after={decision.retry_after}s",
+        )
+
+
+def enforce_auth_rate_limit(request: Request, route: str) -> None:
+    """Count a credential attempt against the caller's address and refuse when over.
+
+    Separate from `enforce_rate_limit` on purpose. That one exists to protect
+    provider quota and says so in its refusal; telling someone who mistyped their
+    password ten times that Gemini's free tier is rate limited would be both false
+    and confusing. This limiter exists for a different reason -- a guessable
+    credential and an unbounded registration endpoint -- so it gets its own budget,
+    its own key and its own message.
+
+    Each route is a separate bucket, so exhausting the sign-in budget cannot lock
+    anyone out of requesting a reset link.
+    """
+    limiter = getattr(request.app.state, "auth_rate_limiter", None)
+    if limiter is None or not limiter.limit:
+        return
+    decision = limiter.check(
+        client_key(
+            client_host=request.client.host if request.client is not None else None,
+            route=route,
+        )
+    )
+    request.state.rate_limit = decision
+    if not decision.allowed:
+        raise RateLimited(
+            "Too many attempts. Please wait a minute and try again.",
             detail=f"retry_after={decision.retry_after}s",
         )

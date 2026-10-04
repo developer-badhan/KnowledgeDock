@@ -143,3 +143,24 @@ def principal_key(
     if workspace_id is not None:
         return f"w:{workspace_id}:{route}"
     return f"anon:{route}"
+
+
+def client_key(*, client_host: str | None, route: str) -> str:
+    """Identify an anonymous caller who has no account or workspace yet.
+
+    `principal_key` is the wrong tool for a sign-in attempt: by definition the
+    caller has no user id, so it collapses every anonymous request into one shared
+    bucket and one abuser locks out the whole service. Keying on the client address
+    keeps each caller separate while still bounding each one.
+
+    The address is whatever ASGI reports, which under `--proxy-headers` is the
+    leftmost `X-Forwarded-For` entry, so behind Render's proxy it is the real
+    caller. That trust is only as good as the edge: if a client could reach the
+    app directly it could present its own header and mint a fresh bucket per
+    request, making the limiter decorative. It cannot, because the only ingress
+    is the proxy.
+
+    `unknown` is a real bucket rather than a fallback onto a shared key, so an
+    absent address cannot become a free pass for everyone else.
+    """
+    return f"ip:{client_host or 'unknown'}:{route}"

@@ -24,6 +24,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from knowledgedock.api.dependencies import (
     SESSION_COOKIE_NAME,
     clear_session_cookie,
+    enforce_auth_rate_limit,
     get_current_user,
     set_session_cookie,
 )
@@ -116,8 +117,13 @@ def _establish_session(response: Response, session: IssuedSession, settings: Set
     status_code=status.HTTP_201_CREATED,
 )
 async def register(
-    payload: RegisterRequest, response: Response, use_case: RegisterDep
+    payload: RegisterRequest,
+    request: Request,
+    response: Response,
+    use_case: RegisterDep,
 ) -> UserResponse:
+    # Before the hash, so a flood is refused rather than paid for.
+    enforce_auth_rate_limit(request, "auth-register")
     user = await use_case.execute(payload.email, payload.password)
     logger.info("auth.registered", extra={"user_id": str(user.id)})
     return to_user_response(user)
@@ -125,8 +131,13 @@ async def register(
 
 @router.post("/auth/login", response_model=SessionResponse)
 async def login(
-    payload: LoginRequest, response: Response, use_case: AuthenticateDep, settings: SettingsDep
+    payload: LoginRequest,
+    request: Request,
+    response: Response,
+    use_case: AuthenticateDep,
+    settings: SettingsDep,
 ) -> SessionResponse:
+    enforce_auth_rate_limit(request, "auth-login")
     session = await use_case.execute(payload.email, payload.password)
     _establish_session(response, session, settings)
     logger.info("auth.logged_in", extra={"user_id": str(session.user.id)})
@@ -151,10 +162,11 @@ async def me(user: CurrentUser) -> UserResponse:
 
 @router.post("/auth/password-reset/request", response_model=PasswordResetAccepted)
 async def password_reset_request(
-    body: PasswordResetRequestBody, use_case: ResetRequestDep
+    body: PasswordResetRequestBody, request: Request, use_case: ResetRequestDep
 ) -> PasswordResetAccepted:
     # The response is byte-identical whether or not the address exists. The reset
     # link goes to the log in development; it must never appear here.
+    enforce_auth_rate_limit(request, "auth-reset-request")
     await use_case.execute(body.email)
     return PasswordResetAccepted(
         accepted=True,
@@ -164,8 +176,11 @@ async def password_reset_request(
 
 @router.post("/auth/password-reset/confirm", response_model=MessageResponse)
 async def password_reset_confirm(
-    body: PasswordResetConfirmBody, use_case: ResetConfirmDep
+    body: PasswordResetConfirmBody, request: Request, use_case: ResetConfirmDep
 ) -> MessageResponse:
+    # A token guess is a credential guess, and the token is a SHA-256 digest, so
+    # the search space is large but the work per attempt is not free.
+    enforce_auth_rate_limit(request, "auth-reset-confirm")
     await use_case.execute(body.token, body.new_password)
     return MessageResponse(message="Your password has been reset. Please sign in.")
 
@@ -197,6 +212,10 @@ async def ui_login(
     email: Annotated[str, Form()],
     password: Annotated[str, Form()],
 ) -> Response:
+    # Shares its bucket with POST /auth/login rather than getting its own: the two
+    # check the same credential, so separate budgets would hand an attacker twice
+    # the attempts for the price of one form field.
+    enforce_auth_rate_limit(request, "auth-login")
     try:
         session = await use_case.execute(email, password)
     except (AuthenticationFailed, ValidationFailed) as exc:
@@ -229,6 +248,7 @@ async def ui_register(
     email: Annotated[str, Form()],
     password: Annotated[str, Form()],
 ) -> Response:
+    enforce_auth_rate_limit(request, "auth-register")
     try:
         user = await use_case.execute(email, password)
     except (Conflict, ValidationFailed) as exc:
@@ -267,6 +287,7 @@ async def ui_password_reset_request(
     # own either. (A known address does cost one extra lookup inside the use
     # case, as it does on the JSON route; that residue is pre-existing and would
     # be fixed in the use case, where both surfaces would benefit.)
+    enforce_auth_rate_limit(request, "auth-reset-request")
     await use_case.execute(email)
     return _auth_page(
         request,
@@ -307,6 +328,7 @@ async def ui_password_reset_confirm(
     # Checked here as well as in the browser. `minlength` and the match
     # constraint are conveniences for the user, not enforcement, and this is the
     # one form where a silent mismatch would strand somebody who cannot sign in.
+    enforce_auth_rate_limit(request, "auth-reset-confirm")
     if new_password != confirm_password:
         return _auth_page(
             request,
