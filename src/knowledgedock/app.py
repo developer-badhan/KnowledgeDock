@@ -537,6 +537,11 @@ async def _optional_current_user(request: Request):
         return None
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
+        authorization = request.headers.get("authorization", "")
+        scheme, _, candidate = authorization.partition(" ")
+        if scheme.lower() == "bearer" and candidate:
+            token = candidate
+    if not token:
         return None
     try:
         return await resolver.execute(token)

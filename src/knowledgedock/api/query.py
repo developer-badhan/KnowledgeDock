@@ -198,7 +198,7 @@ async def start_conversation(
     return ConversationResponse.of(conversation)
 
 
-@router.get("/conversations")
+@router.get("/conversations", response_model=dict)
 async def list_conversations(
     access: Access,
     use_case: ListDep,
@@ -214,7 +214,7 @@ async def list_conversations(
     }
 
 
-@router.get("/conversations/{conversation_id}")
+@router.get("/conversations/{conversation_id}", response_model=dict)
 async def get_conversation(access: Access, use_case: HistoryDep, conversation_id: UUID) -> dict:
     messages = await use_case.execute(access.workspace_id, conversation_id)
     return {

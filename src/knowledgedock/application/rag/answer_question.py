@@ -126,7 +126,7 @@ class AskQuestion:
             )
             for block in outcome.context.blocks
         )
-        prompt = build_grounded_prompt(question, outcome.context.blocks)
+        prompt = build_grounded_prompt(question, outcome.context.blocks, history=history)
         try:
             generated = await self._llm.generate_answer(prompt)
         except Exception:
