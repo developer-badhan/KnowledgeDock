@@ -1043,6 +1043,25 @@ textarea.kd-form-control {
   text-decoration: underline;
 }
 
+/* The recovery link sits with the password field it recovers, so it is right
+   aligned rather than centred under the card like the other alt text. */
+.kd-auth-forgot {
+  text-align: right;
+  font-size: var(--kd-text-sm);
+  margin: var(--kd-space-2) 0 0;
+}
+
+.kd-auth-forgot a {
+  color: var(--kd-accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.kd-auth-forgot a:hover {
+  color: var(--kd-accent-hover);
+  text-decoration: underline;
+}
+
 /* ========================================
    Dashboard
    ======================================== */

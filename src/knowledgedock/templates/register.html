@@ -35,7 +35,7 @@
           id="password"
           name="password"
           autocomplete="new-password"
-          minlength="8"
+          minlength="{{ password_min_length }}"
           required
         />
         <p class="kd-form-hint">At least {{ password_min_length }} characters.</p>

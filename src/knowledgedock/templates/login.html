@@ -12,7 +12,12 @@
     <div class="alert alert-danger" role="alert">{{ error }}</div>
     {% endif %}
     {% if registered %}
-    <div class="alert alert-success" role="alert">Account created. Sign in below.</div>
+    <div class="alert alert-success" role="status">Account created. Sign in below.</div>
+    {% endif %}
+    {% if reset %}
+    <div class="alert alert-success" role="status">
+      Password reset. Sign in with your new password.
+    </div>
     {% endif %}
 
     <form method="post" action="/ui/login" novalidate>
@@ -40,6 +45,11 @@
           autocomplete="current-password"
           required
         />
+        {# Right-aligned rather than centred with the rest of the alt text: it
+           belongs to the password field it recovers. #}
+        <p class="kd-auth-forgot">
+          <a href="/forgot-password">Forgot your password?</a>
+        </p>
       </div>
 
       <button class="kd-btn kd-btn-primary w-100" type="submit">Sign in</button>

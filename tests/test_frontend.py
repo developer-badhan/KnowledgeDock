@@ -132,6 +132,214 @@ class TestAuthPages:
         assert "kd_session" not in response.cookies
 
 
+class TestPasswordResetForm:
+    """The reset flow through the form, which must keep the JSON route's guarantees.
+
+    The form reaches the same two use cases, so it inherits their behaviour. What
+    is tested here is the part the form adds: that rendering and re-rendering a
+    page cannot leak whether an address is registered, and that the token never
+    appears where a client could read it.
+    """
+
+    @staticmethod
+    def _without_echoed_address(html: str, *addresses: str) -> str:
+        """Strip the submitted address so two responses can be compared.
+
+        The page echoes the address back so it need not be retyped, and that echo
+        is the only thing permitted to differ between a known and an unknown
+        address. It is the user's own input, so it discloses nothing.
+        """
+        for address in addresses:
+            html = html.replace(address, "")
+        return html
+
+    @staticmethod
+    def _token(client: TestClient, email: str = "reset@example.com") -> str:
+        """Fetch a reset token the way the use case hands it to the server.
+
+        It is absent from every HTTP response by design, so a test cannot read it
+        from one.
+        """
+        import asyncio
+
+        result = asyncio.run(client.app.state.request_password_reset.execute(email))
+        assert result.delivered_token, "development must surface the link somewhere"
+        return result.delivered_token
+
+    def test_the_login_page_offers_a_way_back_in(self, env):
+        # Without this link the flow is unreachable from the UI, since nothing
+        # else links to it.
+        assert 'href="/forgot-password"' in env[0].get("/login").text
+
+    def test_the_request_page_renders_a_form(self, env):
+        page = env[0].get("/forgot-password")
+        assert page.status_code == 200
+        assert 'action="/ui/password-reset/request"' in page.text
+        assert 'name="email"' in page.text
+
+    def test_requesting_a_link_confirms_without_saying_whether_it_exists(self, env):
+        client = env[0]
+        client.post("/auth/register", json={"email": "reset@example.com", "password": PASSWORD})
+
+        known = client.post("/ui/password-reset/request", data={"email": "reset@example.com"})
+        unknown = client.post("/ui/password-reset/request", data={"email": "nobody@example.com"})
+        malformed = client.post("/ui/password-reset/request", data={"email": "garbage"})
+
+        assert known.status_code == unknown.status_code == malformed.status_code == 200
+        stripped = [
+            self._without_echoed_address(
+                response.text, "reset@example.com", "nobody@example.com", "garbage"
+            )
+            for response in (known, unknown, malformed)
+        ]
+        assert stripped[0] == stripped[1] == stripped[2]
+
+    def test_the_token_never_appears_in_the_request_response(self, env):
+        client = env[0]
+        client.post("/auth/register", json={"email": "reset@example.com", "password": PASSWORD})
+        token = self._token(client)
+
+        response = client.post("/ui/password-reset/request", data={"email": "reset@example.com"})
+
+        # Returning it would distinguish a known address from an unknown one.
+        assert token not in response.text
+
+    def test_a_signed_in_user_is_sent_away_from_the_request_page(self, env, owner):
+        response = owner.client.get("/forgot-password", follow_redirects=False)
+        assert response.status_code == 303
+
+    def test_the_confirm_page_carries_the_token_from_the_link(self, env):
+        page = env[0].get("/reset-password", params={"token": "a-token"})
+        assert page.status_code == 200
+
+        hidden = re.search(r'<input type="hidden" name="token" value="([^"]+)"', page.text)
+        assert hidden is not None, "the token must reach the form as a hidden field"
+        assert hidden.group(1) == "a-token"
+
+    def test_a_link_without_a_token_explains_itself(self, env):
+        # A pasted or truncated link. Offering the form would only ever fail.
+        response = env[0].get("/reset-password")
+        assert response.status_code == 400
+        assert 'name="token"' not in response.text
+        assert 'href="/forgot-password"' in response.text
+
+    def test_confirming_changes_the_password_and_lands_on_sign_in(self, env):
+        client = env[0]
+        client.post("/auth/register", json={"email": "reset@example.com", "password": PASSWORD})
+        token = self._token(client)
+
+        response = client.post(
+            "/ui/password-reset/confirm",
+            data={
+                "token": token,
+                "new_password": "a-brand-new-secret",
+                "confirm_password": "a-brand-new-secret",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/login")
+        assert (
+            client.post(
+                "/auth/login",
+                json={"email": "reset@example.com", "password": "a-brand-new-secret"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/auth/login", json={"email": "reset@example.com", "password": PASSWORD}
+            ).status_code
+            == 401
+        )
+
+    def test_the_login_page_confirms_the_reset(self, env):
+        assert "Password reset" in env[0].get("/login", params={"reset": 1}).text
+
+    def test_mismatched_passwords_are_refused_server_side(self, env):
+        client = env[0]
+        client.post("/auth/register", json={"email": "reset@example.com", "password": PASSWORD})
+        token = self._token(client)
+
+        response = client.post(
+            "/ui/password-reset/confirm",
+            data={
+                "token": token,
+                "new_password": "a-brand-new-secret",
+                "confirm_password": "something-else",
+            },
+        )
+
+        # minlength and the match constraint are conveniences, not enforcement.
+        assert response.status_code == 400
+        assert "do not match" in response.text
+        # The old password still works, so nothing was consumed.
+        assert (
+            client.post(
+                "/auth/login", json={"email": "reset@example.com", "password": PASSWORD}
+            ).status_code
+            == 200
+        )
+
+    def test_a_weak_password_is_refused_and_the_link_survives(self, env):
+        client = env[0]
+        client.post("/auth/register", json={"email": "reset@example.com", "password": PASSWORD})
+        token = self._token(client)
+
+        response = client.post(
+            "/ui/password-reset/confirm",
+            data={"token": token, "new_password": "short", "confirm_password": "short"},
+        )
+
+        assert response.status_code == 400
+        # Still usable: a rejected password must not burn the token.
+        retry = client.post(
+            "/ui/password-reset/confirm",
+            data={
+                "token": token,
+                "new_password": "a-brand-new-secret",
+                "confirm_password": "a-brand-new-secret",
+            },
+            follow_redirects=False,
+        )
+        assert retry.status_code == 303
+
+    def test_an_invalid_token_says_so_and_suggests_a_new_link(self, env):
+        response = env[0].post(
+            "/ui/password-reset/confirm",
+            data={
+                "token": "not-a-real-token",
+                "new_password": "a-brand-new-secret",
+                "confirm_password": "a-brand-new-secret",
+            },
+        )
+        assert response.status_code == 400
+        assert 'href="/forgot-password"' in response.text
+
+    def test_a_token_cannot_be_used_twice(self, env):
+        client = env[0]
+        client.post("/auth/register", json={"email": "reset@example.com", "password": PASSWORD})
+        token = self._token(client)
+        data = {
+            "token": token,
+            "new_password": "a-brand-new-secret",
+            "confirm_password": "a-brand-new-secret",
+        }
+
+        assert (
+            client.post("/ui/password-reset/confirm", data=data, follow_redirects=False).status_code
+            == 303
+        )
+        assert client.post("/ui/password-reset/confirm", data=data).status_code == 400
+
+    def test_the_reset_flow_stays_out_of_the_api_schema(self, env):
+        # The JSON surface is the product; these are HTML routes only.
+        paths = env[0].get("/api/openapi.json").json()["paths"]
+        assert not any(path.startswith("/ui/password-reset") for path in paths)
+        assert not any(path in {"/forgot-password", "/reset-password"} for path in paths)
+
+
 class TestDashboardAccess:
     def test_dashboard_requires_a_session(self, env):
         response = env[0].get("/app", follow_redirects=False)
