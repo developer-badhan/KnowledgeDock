@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="kd-ask">
+  <div class="container">
+    <div class="kd-dash-head">
+      <div>
+        <h1 class="kd-page-title">Ask {{ active.name }}</h1>
+        <p class="text-body-secondary mb-0">
+          Answers come only from this workspace's documents. If nothing matches,
+          it says so rather than guessing.
+        </p>
+      </div>
+      <a class="kd-btn-ghost" href="/w/{{ active.id }}">Back to documents</a>
+    </div>
+
+    <div class="row g-4">
+      <div class="col-lg-8">
+        <form class="kd-ask-form"
+              method="post"
+              action="/ui/workspaces/{{ active.id }}/ask"
+              id="kdAskForm"
+              hx-post="/ui/workspaces/{{ active.id }}/ask"
+              hx-target="#kdAnswer"
+              hx-swap="innerHTML"
+              hx-indicator="#kdAskSpinner">
+          {% if conversation_id %}
+            <input type="hidden" name="conversation_id" value="{{ conversation_id }}" />
+          {% endif %}
+          <label class="visually-hidden" for="kdQuestion">Your question</label>
+          <textarea class="form-control kd-question"
+                    id="kdQuestion"
+                    name="question"
+                    rows="3"
+                    required
+                    maxlength="2000"
+                    placeholder="e.g. When does payroll run, and what locks beforehand?"></textarea>
+          <div class="d-flex justify-content-between align-items-center mt-2">
+            <span class="text-body-secondary small" id="kdAskHint">
+              {% if conversation_id %}Continuing this conversation.{% else %}Starts a new conversation.{% endif %}
+            </span>
+            <button class="kd-btn-primary" type="submit">Ask</button>
+          </div>
+          <div id="kdAskSpinner" class="kd-spinner" hidden>
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            Searching and answering…
+          </div>
+        </form>
+
+        <div id="kdAnswer" aria-live="polite">
+          {% if turns %}{% for turn in turns %}{% include "_turn.html" %}{% endfor %}{% endif %}
+        </div>
+      </div>
+
+      <div class="col-lg-4">
+        <h2 class="h6 text-body-secondary">Conversations</h2>
+        <div id="kdConversations"
+             hx-get="/ui/workspaces/{{ active.id }}/conversations"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+          <p class="text-body-secondary small">Loading…</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

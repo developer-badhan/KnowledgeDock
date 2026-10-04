@@ -1,0 +1,29 @@
+{# One past turn. Used for history and for the answer just given. #}
+{% if turn.role.value == "user" %}
+  <div class="kd-turn kd-turn-user">
+    <div class="kd-turn-role">You asked</div>
+    <p class="kd-turn-text">{{ turn.content }}</p>
+  </div>
+{% else %}
+  <div class="kd-turn kd-turn-assistant{% if turn.no_answer %} kd-turn-empty{% endif %}">
+    <div class="kd-turn-role">
+      Answer{% if turn.no_answer %} — nothing found{% endif %}
+    </div>
+    <p class="kd-turn-text">{{ turn.content }}</p>
+    {% if turn.citations %}
+      <details class="kd-sources">
+        <summary>{{ turn.citations | length }} source{{ '' if turn.citations | length == 1 else 's' }}</summary>
+        <ul class="list-unstyled mb-0">
+          {% for citation in turn.citations %}
+            <li>
+              {{ citation.filename }}
+              <span class="text-body-secondary small">
+                chunk {{ citation.chunk_index }} · relevance {{ '%.2f' | format(citation.score) }}
+              </span>
+            </li>
+          {% endfor %}
+        </ul>
+      </details>
+    {% endif %}
+  </div>
+{% endif %}

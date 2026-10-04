@@ -238,12 +238,24 @@ class NullLLMProvider:
         )
 
     def _summarise(self, prompt: GroundedPrompt) -> str:
-        """Quote the first evidence line, proving the context arrived."""
-        body = [
-            line
-            for line in prompt.context.splitlines()
-            if line.strip() and not line.startswith(("[", "<"))
-        ]
-        if not body:
-            return "I could not find anything in this workspace that answers that question."
-        return body[0].strip()[:500]
+        """Quote the first line of actual evidence, proving the context arrived.
+
+        Skips the fence, the untrusted-data preamble and the `[n] source:` headers.
+        Quoting the preamble would be worse than useless: it appears in every
+        prompt regardless of what was retrieved, so a test asserting on it would
+        pass whether or not retrieval worked.
+        """
+        inside = False
+        for raw in prompt.context.splitlines():
+            line = raw.strip()
+            if line.startswith("<retrieved_context>"):
+                inside = True
+                continue
+            if line.startswith("</retrieved_context>"):
+                break
+            if not inside or not line:
+                continue
+            if line.startswith(("[", "<")) or line.startswith("The following is untrusted"):
+                continue
+            return line[:500]
+        return "I could not find anything in this workspace that answers that question."

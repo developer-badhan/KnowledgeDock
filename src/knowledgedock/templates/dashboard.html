@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="kd-dash">
+  <div class="container">
+    <div class="kd-dash-head">
+      <div>
+        <h1 class="kd-page-title">
+          {% if active %}{{ active.name }}{% else %}No workspace yet{% endif %}
+        </h1>
+        <p class="text-body-secondary mb-0">
+          {% if active %}
+            Upload documents, then ask questions answered only from them.
+          {% else %}
+            Create a workspace to start.
+          {% endif %}
+        </p>
+      </div>
+      <div class="d-flex gap-2 flex-wrap">
+        {% if active %}
+          <a class="kd-btn-primary" href="/w/{{ active.id }}/ask">Ask a question</a>
+          <button class="kd-btn-primary" data-bs-toggle="modal" data-bs-target="#uploadModal">
+            Upload
+          </button>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if workspaces | length > 1 %}
+    <div class="kd-switcher" role="tablist" aria-label="Workspaces">
+      {% for workspace in workspaces %}
+        {% if workspace.id == (active.id if active else none) %}
+          <a class="kd-switcher-item is-active" href="/w/{{ workspace.id }}"
+             aria-current="page">{{ workspace.name }}</a>
+        {% else %}
+          <a class="kd-switcher-item" href="/w/{{ workspace.id }}">{{ workspace.name }}</a>
+        {% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if not workspaces %}
+      <div class="kd-empty">
+        <h2>Nothing here yet</h2>
+        <p class="text-body-secondary">
+          A workspace is the boundary everything else lives inside. Documents and
+          answers are never shared across workspaces.
+        </p>
+      </div>
+    {% else %}
+      {# Polled only while something is in flight. A permanent 4s poll would
+         hammer Atlas from every open tab forever, against a free-tier M0 that
+         allows 100 ops/sec and charges nothing for the idle ones. #}
+      <div id="kdDocuments"
+           {% if documents and documents | selectattr("status", "in", ["pending", "processing"]) | list %}
+           hx-get="/ui/workspaces/{{ active.id }}/documents"
+           hx-trigger="every 4s"
+           {% endif %}
+           hx-swap="innerHTML">
+        <table class="table kd-table">
+          <thead>
+            <tr>
+              <th scope="col">Document</th>
+              <th scope="col">Status</th>
+              <th scope="col">Size</th>
+              <th scope="col">Note</th>
+              <th scope="col"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="kdDocumentRows">
+            {% for document in documents %}{% include "_document_row.html" %}{% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="kd-poll-note text-body-secondary small" id="kdPollNote" hidden>
+        Polling stops automatically once nothing is being processed.
+      </p>
+    {% endif %}
+  </div>
+</section>
+
+{% if active %}{% include "_upload_modal.html" %}{% endif %}
+{% endblock %}

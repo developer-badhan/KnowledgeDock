@@ -18,10 +18,10 @@ Phase 05 Ingestion           [x]  7/7
 Phase 06 Retrieval           [x]  6/6
 Phase 07 RAG                 [x]  7/7
 Phase 08 Reliability         [x]  8/8
-Phase 09 Frontend            [ ]  0/6
+Phase 09 Frontend            [x]  7/7
 Phase 10 Production Readiness [ ]  0/9
 
-Overall: [████████████████████░░░░░░░░░░░░░░░░░░░░] 82% (55/67)
+Overall: [████████████████████████░░░░░░░░░░░░░░░░] 91% (62/68)
 ```
 
 Legend: `[ ]` not started · `[x]` complete
@@ -729,15 +729,49 @@ Branch: `phase-09-frontend`
 
 Scope: dashboard, document management, upload, processing status, knowledge query interface.
 
-- [ ] Base layout + Bootstrap 5 CDN + HTMX CDN, FastAPI `Jinja2Templates` + `StaticFiles`
-- [ ] Login / register screens
-- [ ] Dashboard with workspace switcher
-- [ ] Upload screen (drag-drop + HTMX upload + progress)
-- [ ] Document list + live processing status polling (PENDING → PROCESSING → READY/FAILED)
-- [ ] Ask Knowledge Base UI — answer rendering with source citations
-- [ ] Conversation history view
+- [x] Base layout + Bootstrap 5 CDN + HTMX CDN, FastAPI `Jinja2Templates` + `StaticFiles`
+- [x] Login / register screens
+- [x] Dashboard with workspace switcher
+- [x] Upload screen (drag-drop + HTMX upload + progress)
+- [x] Document list + live processing status polling (PENDING → PROCESSING → READY/FAILED)
+- [x] Ask Knowledge Base UI — answer rendering with source citations
+- [x] Conversation history view
 
-Notes: same-origin only. No JS framework, no build step, no CORS config.
+Notes: same-origin only, no JS framework, no build step, no CORS config. Bootstrap
+and HTMX come from CDN; the only local assets are one stylesheet and one script.
+
+The HTML layer calls the same use cases the JSON API does. A form that
+re-implemented validation, or skipped the workspace dependency, would be a second
+looser path around every rule Phases 03-08 established -- so `UploadDocument`,
+`AskQuestion`, `ListDocuments` and `DeleteDocument` are all reused unchanged, and
+each is tested here for the rule it shares with its JSON twin.
+
+Two of the seven items were already done in Phase 01: the base layout with
+Bootstrap 5 and HTMX from CDN, and the login/register screens. What was new is
+everything behind sign-in.
+
+Fragments are server-rendered HTML. No JSON is embedded in a page for script to
+parse, so there is only ever one description of what a view looks like.
+
+Workspace selection is a path segment (`/w/{id}`) rather than a cookie or query
+parameter. The path is the one form the authorisation dependency already
+validates, and a shared link opens the same workspace for a colleague. A cookie
+would need its own validation and its own way to be wrong.
+
+Polling stops when nothing is in flight. The dashboard refreshes every 4s only
+while a document is pending or processing, and a settled row schedules no
+request at all: an always-on poll from every open tab is pure waste against a
+free-tier M0.
+
+Citations render as a document name, chunk index and relevance score rather than
+as links. A chunk is a slice of a document, not a document, so there is no honest
+URL for it, and linking the parent would misrepresent where a claim came from.
+
+Accessibility was treated as part of the feature rather than a follow-up: the
+active workspace is marked with a border and `aria-current` rather than colour
+alone, the status change is announced through a live region, the file input stays
+keyboard-reachable (visually hidden, not `display:none`), and Enter submits the
+question while Shift+Enter inserts a newline.
 
 ---
 
@@ -849,3 +883,9 @@ Roadmap updated
 | 58 | 08 | AI usage is recorded by a decorator over the provider interfaces, failures included | Keeps the providers about HTTP, covers the stubs with the same accounting, and cannot be bypassed by a new call site. Recording failures matters most: a provider failing 40% of the time looks nothing like one failing 0.5% until you can count them. A broken recorder never fails the request. |
 | 59 | 08 | Rate limiting is a per-user sliding window, in process | The threat is quota, not abuse: one client in a retry loop can spend a workspace's daily allowance in seconds, and the symptom is a wall of 503s hours later pointing at nothing. Fixed windows were rejected because they permit double-spend at the boundary -- the exact burst a limiter prevents. In-process per the roadmap's Redis escape hatch, with the cost stated: state resets on deploy and N instances allow N times the rate. |
 | 60 | 08 | Only the provider-quota endpoints are limited | Limiting every route would throttle the frontend's assets and Render's liveness probe, turning a protective limiter into a self-inflicted outage. |
+| 61 | 09 | The HTML layer reuses the JSON API's use cases unchanged | A form that re-implemented validation, or skipped the workspace dependency, would be a second and looser path around every rule Phases 03-08 established. Each shared rule is tested through the form too, so a divergence shows up as a failing test rather than as a hole found in production. |
+| 62 | 09 | Fragments are server-rendered HTML, never JSON for script to parse | One description of what a view looks like, instead of a template plus a client that re-implements it. |
+| 63 | 09 | The workspace is a path segment, not a cookie or query parameter | `/w/{id}` is the one form the authorisation dependency already validates, and it is bookmarkable and shareable. A remembered 'current workspace' would need its own validation and its own way to be wrong. |
+| 64 | 09 | Status polling stops once nothing is in flight | The dashboard refreshes every 4s only while a document is pending or processing, and a settled row schedules no request. An always-on poll from every open tab is pure waste against a free-tier M0 that allows 100 ops/sec and charges nothing for idle ones. |
+| 65 | 09 | Citations render as name, chunk index and score, not as links | A chunk is a slice of a document, not a document. There is no honest URL for one, and linking the parent would misrepresent where a claim came from. |
+| 66 | 09 | Sources are plain text, and the file input stays keyboard-reachable | Confidence should not depend on telling two hues apart, so state is carried by borders and text as well as colour; status changes are announced via a live region. The file input is visually hidden rather than `display:none`, which would remove it from the tab order entirely. |

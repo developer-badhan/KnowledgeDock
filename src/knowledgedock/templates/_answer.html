@@ -1,0 +1,55 @@
+{# The answer to the question just asked, rendered as a fragment.
+
+   Sources are listed as plain names with their relevance rather than as links:
+   a chunk is a slice of a document, not a document, so there is no honest URL to
+   link to and a link to the parent document would misrepresent where the claim
+   came from. #}
+<div class="kd-turn kd-turn-assistant{% if answer.no_answer %} kd-turn-empty{% endif %}">
+  <div class="kd-turn-role">Answer{% if answer.no_answer %} — nothing found{% endif %}</div>
+  <p class="kd-turn-text">{{ answer.answer }}</p>
+
+  {% if answer.sources %}
+    <details class="kd-sources" open>
+      <summary>{{ answer.sources | length }} source{{ '' if answer.citations | length == 1 else 's' }}</summary>
+      <ul class="list-unstyled mb-0">
+        {% for citation in answer.sources %}
+          <li class="kd-source">
+            <span class="kd-source-name">{{ citation.filename }}</span>
+            <span class="text-body-secondary small">
+              chunk {{ citation.chunk_index }} · relevance {{ '%.2f' | format(citation.score) }}
+            </span>
+          </li>
+        {% endfor %}
+      </ul>
+    </details>
+  {% endif %}
+
+  {% if answer.retrieval.top_score is not none %}
+    <p class="kd-retrieval-note text-body-secondary small">
+      Top match {{ '%.2f' | format(answer.retrieval.top_score) }}
+      against a threshold of {{ '%.2f' | format(answer.retrieval.threshold) }}
+      {% if answer.no_answer %} — nothing cleared it.{% endif %}
+    </p>
+  {% endif %}
+
+  {% if answer.conversation_id %}
+    {# The follow-up form carries the conversation so the next question inherits
+       this one's subject, which is the whole point of keeping it. #}
+    <form class="kd-followup"
+          method="post"
+          action="/ui/workspaces/{{ active_id }}/ask"
+          hx-post="/ui/workspaces/{{ active_id }}/ask"
+          hx-target="#kdAnswer"
+          hx-swap="beforeend"
+          hx-indicator="#kdFollowupSpinner">
+      <input type="hidden" name="conversation_id" value="{{ answer.conversation_id }}" />
+      <label class="visually-hidden" for="kdFollowup">Ask a follow-up</label>
+      <input class="form-control" type="text" id="kdFollowup" name="question"
+             required placeholder="Ask a follow-up…" />
+      <button class="kd-btn-primary mt-2" type="submit">Ask</button>
+      <div id="kdFollowupSpinner" class="kd-spinner" hidden>
+        <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+      </div>
+    </form>
+  {% endif %}
+</div>

@@ -13,6 +13,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -27,6 +28,7 @@ from knowledgedock.api.documents import router as documents_router
 from knowledgedock.api.health import router as health_router
 from knowledgedock.api.query import router as query_router
 from knowledgedock.api.search import router as search_router
+from knowledgedock.api.ui import router as ui_router
 from knowledgedock.api.workspaces import router as workspaces_router
 from knowledgedock.application.auth.use_cases import (
     AuthenticateUser,
@@ -135,6 +137,10 @@ def create_app(
     templates = Jinja2Templates(directory=settings.templates_dir)
     templates.env.globals["is_production"] = settings.is_production
     templates.env.globals["app_version"] = __version__
+    templates.env.filters["filesizeformat"] = _filesize
+    # Aliased because the roadmap and every other layer call it `filesize`.
+    templates.env.filters["filesize"] = _filesize
+    templates.env.filters["datetimeformat"] = _short_datetime
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -475,6 +481,7 @@ def create_app(
     app.include_router(documents_router)
     app.include_router(search_router)
     app.include_router(query_router)
+    app.include_router(ui_router)
 
     @app.get("/", include_in_schema=False)
     async def index(request: Request) -> Response:
@@ -627,6 +634,34 @@ def _error_response(
     return JSONResponse(
         status_code=status_code, content={"error": {"code": code, "message": message}}
     )
+
+
+def _filesize(value: int | None) -> str:
+    """Human-readable byte count for the document table.
+
+    Decimal units, because that is how file sizes are labelled everywhere else in
+    the industry. A binary reading that disagreed with the number in the OS file
+    manager would read as a bug.
+    """
+    size = float(value or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1000 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1000
+    return f"{size:.1f} GB"
+
+
+def _short_datetime(value) -> str:
+    """A compact local timestamp for conversation rows.
+
+    Rendered in UTC rather than converted: the browser already knows the user's
+    offset, and this avoids shipping a timezone assumption through to the client.
+    """
+    if value is None:
+        return ""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).strftime("%d %b %Y, %H:%M UTC")
 
 
 def _build_llm_provider(settings: Settings):

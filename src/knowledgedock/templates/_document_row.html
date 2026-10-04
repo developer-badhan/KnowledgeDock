@@ -1,0 +1,33 @@
+{# One document. Also the fragment the status poll replaces, so this file is the
+   only description of a document row. #}
+<tr id="doc-{{ document.id }}"
+    {% if document.status.value in ("pending", "processing") %}
+    hx-get="/ui/workspaces/{{ active.id }}/documents"
+    hx-trigger="load delay:2s"
+    hx-select="#doc-{{ document.id }}"
+    hx-swap="outerHTML"
+    hx-target="this"
+    {% endif %}>
+  <td class="kd-doc-name">
+    {{ document.filename }}
+    {% if document.status.value in ("pending", "processing") %}
+      {# Announced politely so a screen reader hears the change once it happens,
+         rather than having to poll the table itself. #}
+      <span class="visually-hidden" aria-live="polite">processing</span>
+    {% endif %}
+  </td>
+  <td><span class="kd-badge kd-badge-{{ document.status.value }}">{{ document.status.value }}</span></td>
+  <td class="text-body-secondary">{{ document.size_bytes | filesize }}</td>
+  <td class="kd-doc-error">
+    {% if document.processing_error %}
+      <span title="{{ document.processing_error }}">{{ document.processing_error }}</span>
+    {% endif %}
+  </td>
+  <td class="text-end">
+    <form method="post"
+          action="/ui/workspaces/{{ active.id }}/documents/{{ document.id }}/delete"
+          onsubmit="return confirm('Delete {{ document.filename | e }}? This cannot be undone.');">
+      <button class="kd-btn-ghost" type="submit">Delete</button>
+    </form>
+  </td>
+</tr>
