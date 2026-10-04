@@ -46,7 +46,11 @@ ENVIRONMENT=test
 SECRET_KEY=test-secret-key-long-enough-to-pass-validation-0123456789
 MONGODB_URI=mongodb://localhost:27017
 MONGODB_DB=knowledgedock_test
-AI_PROVIDER=null
+# Declared as gemini even though every test injects stub providers. The null
+# providers are refused by /search and /query, because answering from hash-derived
+# vectors would return confident nonsense; tests that want null mode build a
+# settings object with it explicitly.
+AI_PROVIDER=gemini
 GEMINI_API_KEY=test-key
 GEMINI_EMBEDDING_TASK_DOCUMENT=RETRIEVAL_DOCUMENT
 GEMINI_EMBEDDING_TASK_QUERY=RETRIEVAL_QUERY

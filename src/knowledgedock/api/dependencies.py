@@ -15,7 +15,11 @@ from fastapi import Depends, Path, Request, Response
 
 from knowledgedock.application.auth.use_cases import ResolveCurrentUser
 from knowledgedock.application.workspaces.use_cases import AuthorizeWorkspace
-from knowledgedock.domain.errors import AuthenticationFailed, PermissionDenied
+from knowledgedock.domain.errors import (
+    AuthenticationFailed,
+    PermissionDenied,
+    ServiceUnavailable,
+)
 from knowledgedock.domain.users import User
 from knowledgedock.domain.workspaces import WorkspaceAccess
 
@@ -77,6 +81,37 @@ async def get_current_user(
 # --------------------------------------------------------------------------
 # Workspace authorization
 # --------------------------------------------------------------------------
+def require_configured_ai(request: Request) -> None:
+    """Refuse retrieval and generation when `AI_PROVIDER=null`.
+
+    The null providers are deterministic *stand-ins*: `NullEmbeddingProvider`
+    derives vectors from a hash of the text, and `NullLLMProvider` quotes the
+    first line of the context it was handed. That makes the whole pipeline
+    runnable and testable without an API key, which is their purpose.
+
+    It also means their output carries no meaning. A search would rank documents
+    by hash similarity and a query would return an answer assembled from
+    whichever chunk hashed closest -- confident, well-formed, and arbitrary. That
+    is worse than an error, because nothing in the response distinguishes it from
+    a real answer.
+
+    So the stand-ins stay wired up for ingestion, where they exercise the
+    document lifecycle, and the two endpoints that would *answer* a person refuse
+    with 503 instead. Refusing is the honest outcome: the configuration is
+    incomplete, not temporarily broken, and the message says so.
+    """
+    settings = getattr(request.app.state, "settings", None)
+    if settings is not None and settings.ai_provider == "null":
+        # The remedy goes in `message`, not `detail`: `detail` carries internal
+        # context and is logged rather than returned, so a hint parked there would
+        # never reach the person who needs it.
+        raise ServiceUnavailable(
+            "Answering is not configured. AI_PROVIDER is 'null', which supplies "
+            "placeholder results rather than real ones. Set AI_PROVIDER=gemini to "
+            "enable /search and /query."
+        )
+
+
 def get_authorize(request: Request) -> AuthorizeWorkspace:
     return request.app.state.authorize_workspace
 

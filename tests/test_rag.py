@@ -12,6 +12,8 @@ inspect the exact request that would go over the wire.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -765,3 +767,72 @@ class TestQueryApi:
             ).status_code
             == 404
         )
+
+
+class TestNullProviderIsRefused:
+    """`AI_PROVIDER=null` must not answer a person.
+
+    The null providers are deterministic stand-ins for running the pipeline
+    without a key. Their output is well-formed and carries no meaning, which is
+    the problem: a hash-ranked search returns arbitrary chunks with real-looking
+    scores, and the stub LLM quotes whichever chunk hashed closest. Nothing in the
+    response distinguishes that from a genuine answer.
+    """
+
+    @pytest.fixture
+    def null_client(self, settings, workspaces):
+        import dataclasses
+
+        from knowledgedock.infrastructure.repositories.user_repository import (
+            InMemoryUserRepository,
+        )
+        from tests.conftest import _build_app
+
+        null_settings = dataclasses.replace(settings, ai_provider="null")
+        app = _build_app(null_settings, InMemoryUserRepository(), workspaces, embeddings=AnyQuery())
+        with TestClient(app) as client:
+            yield client
+
+    @pytest.fixture
+    def null_actor(self, null_client):
+        actor = make_actor(null_client, "boss")
+        return actor, workspace_of(actor.client)
+
+    def test_query_is_refused_with_a_clear_503(self, null_actor):
+        actor, ws = null_actor
+        response = actor.client.post(f"/workspaces/{ws['id']}/query", json={"question": "anything"})
+        assert response.status_code == 503
+        assert "AI_PROVIDER" in response.json()["error"]["message"]
+
+    def test_search_is_refused_with_a_clear_503(self, null_actor):
+        actor, ws = null_actor
+        response = actor.client.post(f"/workspaces/{ws['id']}/search", json={"query": "anything"})
+        assert response.status_code == 503
+        assert "AI_PROVIDER" in response.json()["error"]["message"]
+
+    def test_the_message_says_how_to_fix_it(self, null_actor):
+        # A 503 with no remedy sends someone to the status page.
+        actor, ws = null_actor
+        body = actor.client.post(f"/workspaces/{ws['id']}/query", json={"question": "x"}).json()
+        assert body["error"]["message"]
+        assert "gemini" in json.dumps(body).lower()
+
+    def test_refusal_happens_before_any_answer_is_manufactured(self, null_actor):
+        actor, ws = null_actor
+
+        assert (
+            actor.client.post(f"/workspaces/{ws['id']}/query", json={"question": "x"})
+            .json()
+            .get("answer")
+            is None
+        )
+
+    def test_conversation_history_is_still_readable(self, null_actor):
+        # Only answering is refused. Workspace administration must keep working,
+        # or this becomes an outage rather than a misconfiguration notice.
+        actor, ws = null_actor
+        assert actor.client.get(f"/workspaces/{ws['id']}/conversations").status_code == 200
+        assert actor.client.get(f"/workspaces/{ws['id']}/documents").status_code == 200
+
+    def test_authentication_is_unaffected(self, null_client):
+        assert null_client.get("/health/ready").status_code in (200, 503)

@@ -122,7 +122,7 @@ class TestSettingsLoading:
     def test_reads_values_from_the_env_file(self, settings: Settings) -> None:
         assert settings.environment == "test"
         assert settings.mongodb_db == "knowledgedock_test"
-        assert settings.ai_provider == "null"
+        assert settings.ai_provider == "gemini"
 
     def test_optional_values_fall_back_to_code_defaults(self, settings: Settings) -> None:
         # None of these appear in the test .env, so each must come from the
