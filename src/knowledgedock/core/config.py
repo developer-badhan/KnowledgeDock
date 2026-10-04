@@ -77,6 +77,10 @@ class Settings:
     gemini_embedding_max_input_tokens: int
     ai_timeout_seconds: float
     ai_max_retries: int
+    gemini_chat_max_output_tokens: int
+    gemini_chat_temperature: float
+    llm_history_max_messages: int
+    llm_max_question_characters: int
     ai_retry_backoff_seconds: float
 
     # -- Uploads -----------------------------------------------------------
@@ -140,6 +144,14 @@ class Settings:
         # would silently accept a threshold that rejects everything.
         if not -1.0 <= self.retrieval_min_score <= 1.0:
             raise ValueError("RETRIEVAL_MIN_SCORE must be between -1.0 and 1.0")
+        if self.gemini_chat_max_output_tokens < 1:
+            raise ValueError("GEMINI_CHAT_MAX_OUTPUT_TOKENS must be at least 1")
+        if not 0.0 <= self.gemini_chat_temperature <= 2.0:
+            raise ValueError("GEMINI_CHAT_TEMPERATURE must be between 0.0 and 2.0")
+        if self.llm_history_max_messages < 0:
+            raise ValueError("LLM_HISTORY_MAX_MESSAGES cannot be negative")
+        if self.llm_max_question_characters < 1:
+            raise ValueError("LLM_MAX_QUESTION_CHARACTERS must be at least 1")
         if not self.allowed_content_types:
             raise ValueError("ALLOWED_CONTENT_TYPES must list at least one content type")
 
@@ -230,6 +242,12 @@ def load_settings(source: Any | None = None) -> Settings:
         gemini_embedding_max_input_tokens=optional("GEMINI_EMBEDDING_MAX_INPUT_TOKENS", 1800, int),
         ai_timeout_seconds=optional("AI_TIMEOUT_SECONDS", 30, float),
         ai_max_retries=optional("AI_MAX_RETRIES", 3, int),
+        gemini_chat_max_output_tokens=optional("GEMINI_CHAT_MAX_OUTPUT_TOKENS", 1024, int),
+        # 0.2 rather than 0: this is a grounded summariser of retrieved text, and
+        # a lower temperature keeps it from embellishing evidence it was given.
+        gemini_chat_temperature=optional("GEMINI_CHAT_TEMPERATURE", 0.2, float),
+        llm_history_max_messages=optional("LLM_HISTORY_MAX_MESSAGES", 10, int),
+        llm_max_question_characters=optional("LLM_MAX_QUESTION_CHARACTERS", 2000, int),
         # Base for exponential backoff with full jitter on provider retries.
         ai_retry_backoff_seconds=optional("AI_RETRY_BACKOFF_SECONDS", 1.0, float),
         storage_dir=optional("STORAGE_DIR", "/tmp/knowledgedock/uploads"),

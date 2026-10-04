@@ -23,8 +23,12 @@ from fastapi.testclient import TestClient
 from knowledgedock.app import create_app
 from knowledgedock.core.config import Settings, load_settings
 from knowledgedock.infrastructure.ai.embedding import NullEmbeddingProvider
+from knowledgedock.infrastructure.ai.llm import NullLLMProvider
 from knowledgedock.infrastructure.repositories.chunk_repository import (
     InMemoryChunkRepository,
+)
+from knowledgedock.infrastructure.repositories.conversation_repository import (
+    InMemoryConversationRepository,
 )
 from knowledgedock.infrastructure.repositories.document_repository import (
     InMemoryDocumentRepository,
@@ -253,6 +257,8 @@ def _build_app(
     storage=None,
     chunks=None,
     embeddings=None,
+    llm=None,
+    conversations=None,
     processing_enabled=False,
 ):
     return create_app(
@@ -264,6 +270,8 @@ def _build_app(
         chunk_repository=chunks if chunks is not None else InMemoryChunkRepository(),
         storage=storage if storage is not None else LocalFileStorage(make_storage_root()),
         embeddings=embeddings or NullEmbeddingProvider(),
+        llm=llm or NullLLMProvider(),
+        conversation_repository=conversations or InMemoryConversationRepository(),
         processing_enabled=processing_enabled,
     )
 
