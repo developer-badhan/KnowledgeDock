@@ -24,6 +24,7 @@ from knowledgedock.application.rag.answer_question import (
     AskQuestion,
     DeleteConversation,
     GetConversationHistory,
+    GetUsage,
     ListConversations,
     StartConversation,
 )
@@ -65,6 +66,10 @@ def get_delete_conversation(request: Request) -> DeleteConversation:
     return request.app.state.delete_conversation
 
 
+def get_usage(request: Request) -> GetUsage:
+    return request.app.state.get_usage
+
+
 # Each one is a named function with an annotated `request: Request`. A bare
 # lambda cannot carry that annotation, so FastAPI cannot tell `request` is the
 # ASGI request and instead treats it as a body field the caller must send.
@@ -73,6 +78,7 @@ StartDep = Annotated[StartConversation, Depends(get_start_conversation)]
 ListDep = Annotated[ListConversations, Depends(get_list_conversations)]
 HistoryDep = Annotated[GetConversationHistory, Depends(get_history)]
 DeleteConvDep = Annotated[DeleteConversation, Depends(get_delete_conversation)]
+UsageDep = Annotated[GetUsage, Depends(get_usage)]
 
 
 class AskRequest(BaseModel):
@@ -223,3 +229,17 @@ async def delete_conversation(
 ) -> Response:
     await use_case.execute(access.workspace_id, conversation_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/usage")
+async def usage(
+    access: Access,
+    use_case: UsageDep,
+    days: Annotated[int, Query(ge=1, le=90)] = 1,
+) -> dict:
+    """AI usage for this workspace.
+
+    Deliberately not rate limited: it reads only from this application and spends
+    no provider quota, and a dashboard polling it should not be throttled.
+    """
+    return await use_case.execute(access.workspace_id, days=days)

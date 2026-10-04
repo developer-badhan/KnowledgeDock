@@ -48,6 +48,7 @@ from knowledgedock.application.rag.answer_question import (
     AskQuestion,
     DeleteConversation,
     GetConversationHistory,
+    GetUsage,
     ListConversations,
     StartConversation,
 )
@@ -359,6 +360,7 @@ def create_app(
         app.state.list_conversations = ListConversations(conversations_repo)
         app.state.get_conversation_history = GetConversationHistory(conversations_repo)
         app.state.delete_conversation = DeleteConversation(conversations_repo)
+        app.state.get_usage = GetUsage(usage_repo)
         app.state.conversation_repository = conversations_repo
         app.state.usage_repository = usage_repo
 

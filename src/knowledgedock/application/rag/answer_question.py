@@ -213,3 +213,33 @@ class DeleteConversation:
     async def execute(self, workspace_id: UUID, conversation_id: UUID) -> None:
         if not await self._conversations.delete(conversation_id, workspace_id):
             raise NotFound("Conversation not found.")
+
+
+class GetUsage:
+    """AI spend for one workspace over a rolling window.
+
+    Scoped by workspace like everything else: usage is a property of the workspace
+    that caused it, and a report that could be widened to "all workspaces" would be
+    one query away from disclosing another tenant's activity.
+
+    The window is bounded rather than "all time". An unbounded report on a
+    long-lived workspace walks every row it has ever written, which is exactly the
+    query shape that stops being fast; and the operational question is always
+    "are we about to hit the free tier's daily ceiling", which is a rolling
+    window question.
+    """
+
+    def __init__(self, usage: object, *, default_days: int = 1) -> None:
+        self._usage = usage
+        self._default_days = default_days
+
+    async def execute(self, workspace_id: UUID, *, days: int | None = None) -> dict:
+        from knowledgedock.infrastructure.repositories.usage_repository import default_window
+
+        days = self._default_days if days is None else max(1, min(days, 90))
+        totals = await self._usage.totals_for_workspace(workspace_id, since=default_window(days))
+        return {
+            "workspace_id": str(workspace_id),
+            "window_days": days,
+            "totals": totals,
+        }

@@ -988,12 +988,122 @@ Docker Compose
 
 ## Phase 10 — Production Readiness
 
-- Tests
-- Docker
-- Environment configuration
-- Security review
-- Observability
-- README documentation
+- 500+ tests across auth, authorization, document lifecycle, retrieval, RAG and reliability
+- An end-to-end test of the §40 flow, driven by the real ingestion worker
+- `GET /usage` — per-workspace AI spend and failure counts
+- Dockerfile verified as multi-stage, non-root, layer-cached and pinned
+- Security review encoded as executable assertions
+- This README and `.agents/roadmap.md` brought in line with what shipped
+
+---
+
+# API reference
+
+Every route below is same-origin and requires a session cookie, except the health
+checks and the auth entry points. A bearer token is accepted in place of the cookie
+for scripted use.
+
+## Health
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Liveness. 200 while the process is up, whatever the database is doing. |
+| `GET` | `/health/ready` | Readiness. 503 when Atlas is unreachable. This is the path Render polls. |
+| `GET` | `/health/readyz`, `/readyz` | Aliases of the above. |
+
+## Authentication
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/auth/register` | Create an account. `409` if the address is taken. |
+| `POST` | `/auth/login` | Start a session. Identical response for an unknown address and a wrong password. |
+| `POST` | `/auth/logout` | End the session. |
+| `GET` | `/auth/me` | The current user. |
+| `POST` | `/auth/password-reset/request` | Always `202`, whether or not the address exists. |
+| `POST` | `/auth/password-reset/confirm` | Set a new password; invalidates every existing session. |
+
+## Workspaces
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/workspaces` | Create a workspace. The creator is its owner. |
+| `GET` | `/workspaces` | Workspaces this user is a member of. There is no "all". |
+| `GET` | `/workspaces/{id}` | One workspace. `404` for a non-member. |
+| `PATCH` | `/workspaces/{id}` | Rename. |
+| `DELETE` | `/workspaces/{id}` | Delete, with its documents and conversations. |
+| `GET` | `/workspaces/{id}/members` | Members and roles. |
+| `POST` | `/workspaces/{id}/members` | Add a member. |
+| `DELETE` | `/workspaces/{id}/members/{user_id}` | Remove a member. The owner cannot be removed. |
+
+## Documents
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/workspaces/{id}/documents` | Upload. `202`; processing happens in the worker. |
+| `GET` | `/workspaces/{id}/documents` | Paginated list. |
+| `GET` | `/workspaces/{id}/documents/{doc_id}` | One document, including `status` and `processing_error`. |
+| `DELETE` | `/workspaces/{id}/documents/{doc_id}` | Hard delete: row, chunks and stored file. |
+
+Re-uploading identical bytes replaces the existing document in place and returns it
+to `pending` rather than creating a duplicate.
+
+## Retrieval and answering
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/workspaces/{id}/search` | Raw semantic search. No LLM. Reports `threshold`, `top_score`, `below_threshold` and the assembled context. |
+| `POST` | `/workspaces/{id}/query` | Retrieve, build context, generate a grounded answer, cite sources. |
+| `GET` | `/workspaces/{id}/usage` | AI spend for this workspace over a rolling window, including failures. |
+
+`/search` is the tuning surface: `/query` tells you *what* was said, and `/search`
+tells you *why retrieval chose it*.
+
+## Conversations
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/workspaces/{id}/conversations` | Start a thread. |
+| `GET` | `/workspaces/{id}/conversations` | Recent threads. |
+| `GET` | `/workspaces/{id}/conversations/{id}` | Turns, oldest first, with each answer's sources. |
+| `DELETE` | `/workspaces/{id}/conversations/{id}` | Delete the thread and its turns. |
+
+## Browser interface
+
+Not part of the JSON schema. `/app` is the dashboard, `/w/{id}` a workspace, and
+`/w/{id}/ask` the question interface. Form posts under `/ui/...` call the same use
+cases as the JSON API, so the browser is not a second, looser path around
+validation or the workspace boundary.
+
+---
+
+# Architecture at a glance
+
+```text
+Browser ──► FastAPI ──► use cases ──► repositories ──► Atlas M0
+                            │                              │
+                            └──────────► providers ────────┘
+                                          │
+                            Gemini (embeddings, generation)
+
+Background: MongoDB-backed poller, started in the lifespan
+   PENDING ──► PROCESSING ──► extract ──► normalise ──► chunk
+                                              │
+                                              ▼
+                                    embed ──► store ──► READY
+```
+
+Four properties hold everywhere:
+
+- **The workspace is the only access boundary.** Every query is scoped by
+  `(workspace_id, document_id)`, and the vector filter is applied *inside* the
+  index so scoping happens before scoring, not after.
+- **Retrieved text is data, never instructions.** It is fenced and its delimiters
+  are neutralised, so a payload cannot close the fence and continue in the
+  instruction voice.
+- **No-answer is a real outcome.** Retrieval runs before generation, so a question
+  with no supporting evidence never reaches the model.
+- **Providers are behind an interface.** Business logic depends on the protocol,
+  not on a vendor SDK, which is what let `AI_PROVIDER=null` exist for local runs.
 
 ---
 

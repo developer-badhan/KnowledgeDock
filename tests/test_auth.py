@@ -625,3 +625,93 @@ class TestNavigationSessionState:
 
     def test_production_hides_the_api_docs_link(self, production_client: TestClient) -> None:
         assert "/api/docs" not in production_client.get("/").text
+
+
+#: 40 bytes. Config validation requires at least 32 in production, and PyJWT warns
+#: below that, so the fixtures use a realistic strength rather than a token string.
+TEST_SECRET = "test-session-signing-key-0123456789abcdef"
+OTHER_SECRET = "a-different-session-key-9876543210fedcba"
+
+
+class TestSessionIssuedAtIsNotValidated:
+    """`iat` must not gate validity, because the wall clock is not monotonic.
+
+    PyJWT validates `iat` against the current time. If the clock steps backwards --
+    an NTP correction, a VM resume, a container being throttled and unfrozen -- a
+    session minted a moment earlier appears to come from the future and is
+    rejected with `ImmatureSignatureError`. The user is signed out, with no way to
+    explain why.
+
+    This produced an intermittent failure across five phases of the test suite that
+    was traced to exactly this, so it is pinned here rather than left to chance.
+    """
+
+    def _service(self) -> TokenService:
+        return TokenService(TEST_SECRET, expire_minutes=60)
+
+    def test_a_token_survives_the_clock_stepping_backwards(self, monkeypatch):
+        import time as time_module
+        from datetime import UTC, datetime
+
+        service = self._service()
+        user_id = uuid4()
+
+        # PyJWT reads the clock through `time.time`; freeze it so `iat` is minted
+        # against a known "now".
+        frozen = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        monkeypatch.setattr(time_module, "time", lambda: frozen.timestamp())
+        token = service.issue_session(user_id, 1)
+
+        # The clock jumps back five seconds, as NTP or a host resume would.
+        stepped_back = frozen.timestamp() - 5
+        monkeypatch.setattr(time_module, "time", lambda: stepped_back)
+
+        session = service.decode_session(token)
+        assert session is not None, "a session was invalidated by a backwards clock step"
+        assert session.user_id == user_id
+
+    def test_expiry_is_still_enforced(self, monkeypatch):
+        """The claim that carries meaning must keep working.
+
+        Turning off `iat` validation must not weaken `exp`, which is what actually
+        limits a session's life.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        service = TokenService(TEST_SECRET, expire_minutes=1)
+        issued = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        token = service.issue_session(uuid4(), 1, now=issued)
+
+        later = issued + timedelta(minutes=30)
+        import time as time_module
+
+        monkeypatch.setattr(time_module, "time", lambda: later.timestamp())
+        assert service.decode_session(token) is None
+
+    def test_iat_is_still_present_for_auditing(self):
+        import jwt as pyjwt
+
+        from knowledgedock.infrastructure.security.tokens import ALGORITHM
+
+        token = self._service().issue_session(uuid4(), 1)
+        payload = pyjwt.decode(
+            token,
+            "secret-for-this-test",
+            algorithms=[ALGORITHM],
+            options={"verify_signature": False},
+        )
+        # Recorded, not enforced.
+        assert "iat" in payload
+
+    def test_a_token_signed_with_another_secret_is_still_refused(self):
+        other = TokenService(OTHER_SECRET, expire_minutes=60)
+        token = other.issue_session(uuid4(), 1)
+        assert self._service().decode_session(token) is None
+
+    def test_a_token_from_another_issuer_is_still_refused(self):
+        from knowledgedock.infrastructure.security.tokens import TokenService
+
+        token = TokenService(TEST_SECRET, expire_minutes=60, issuer="somebody-else").issue_session(
+            uuid4(), 1
+        )
+        assert self._service().decode_session(token) is None
