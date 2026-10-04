@@ -69,7 +69,13 @@ from knowledgedock.infrastructure.ai.embedding import (
     NullEmbeddingProvider,
 )
 from knowledgedock.infrastructure.ai.llm import GeminiChatProvider, NullLLMProvider
+from knowledgedock.infrastructure.ai.usage import (
+    UsageRecorder,
+    UsageTrackingLLM,
+    UsageTrackingProvider,
+)
 from knowledgedock.infrastructure.mongo import MongoManager
+from knowledgedock.infrastructure.rate_limit import RateLimiter
 from knowledgedock.infrastructure.repositories.chunk_repository import (
     MongoChunkRepository,
     UnavailableChunkRepository,
@@ -81,6 +87,10 @@ from knowledgedock.infrastructure.repositories.conversation_repository import (
 from knowledgedock.infrastructure.repositories.document_repository import (
     MongoDocumentRepository,
     UnavailableDocumentRepository,
+)
+from knowledgedock.infrastructure.repositories.usage_repository import (
+    MongoAIUsageRepository,
+    UnavailableAIUsageRepository,
 )
 from knowledgedock.infrastructure.repositories.user_repository import (
     MongoUserRepository,
@@ -108,6 +118,8 @@ def create_app(
     document_repository=None,
     chunk_repository=None,
     conversation_repository=None,
+    usage_repository=None,
+    clock=None,
     storage=None,
     embeddings=None,
     llm=None,
@@ -183,6 +195,21 @@ def create_app(
                     exc_info=True,
                 )
                 documents_repo = UnavailableDocumentRepository(exc)
+
+        if usage_repository is not None:
+            usage_repo = usage_repository
+        elif isinstance(repository, UnavailableUserRepository):
+            usage_repo = UnavailableAIUsageRepository(repository.cause)
+        else:
+            try:
+                usage_repo = MongoAIUsageRepository(mongo.database())
+            except Exception as exc:  # pragma: no cover - mirrors the other paths
+                logger.error(
+                    "usage.repository_unavailable",
+                    extra={"error": "could not reach the database at startup"},
+                    exc_info=True,
+                )
+                usage_repo = UnavailableAIUsageRepository(exc)
 
         if conversation_repository is not None:
             conversations_repo = conversation_repository
@@ -266,7 +293,20 @@ def create_app(
         # One provider shared by ingestion and retrieval: it owns an httpx client
         # and a token counter, and two instances would double the connections and
         # split the accounting that Phase 05 added for quota safety.
-        embedding_provider = embeddings or _build_embedding_provider(settings)
+        raw_embeddings = embeddings or _build_embedding_provider(settings)
+        raw_llm = llm or _build_llm_provider(settings)
+        recorder = UsageRecorder(usage_repo)
+        # The null providers report arithmetic on string lengths as tokens, so
+        # recording them would fill the quota ledger with noise that looks like
+        # real spend.
+        embedding_provider = (
+            raw_embeddings
+            if settings.ai_provider == "null"
+            else UsageTrackingProvider(raw_embeddings, recorder)
+        )
+        answer_provider = (
+            raw_llm if settings.ai_provider == "null" else UsageTrackingLLM(raw_llm, recorder)
+        )
 
         process = ProcessDocument(
             documents=documents_repo,
@@ -302,7 +342,7 @@ def create_app(
 
         app.state.ask_question = AskQuestion(
             search=app.state.semantic_search,
-            llm=llm or _build_llm_provider(settings),
+            llm=answer_provider,
             conversations=conversations_repo,
             top_k=settings.retrieval_top_k,
             min_score=settings.retrieval_min_score,
@@ -314,6 +354,7 @@ def create_app(
         app.state.get_conversation_history = GetConversationHistory(conversations_repo)
         app.state.delete_conversation = DeleteConversation(conversations_repo)
         app.state.conversation_repository = conversations_repo
+        app.state.usage_repository = usage_repo
 
         await _ensure_indexes(
             repository,
@@ -321,6 +362,16 @@ def create_app(
             documents_repo,
             chunks_repo,
             conversations_repo,
+            usage_repo,
+        )
+
+        # Per-user sliding window on the provider-quota endpoints. `clock` is
+        # injectable so the limiter can be tested against time passing without
+        # the test sleeping.
+        app.state.rate_limiter = RateLimiter(
+            limit=settings.ai_rate_limit_per_minute,
+            window_seconds=60.0,
+            clock=clock,
         )
 
         # The vector index is created here so a fresh Atlas cluster needs no
@@ -394,6 +445,15 @@ def create_app(
             raise
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
         response.headers["x-request-id"] = request_id
+        # Set here rather than on the raised error: FastAPI runs exception
+        # handlers inside this middleware, so the 429 reaches it as a normal
+        # response and carries the headers. It also publishes the remaining
+        # budget on successful calls, which is how a client paces itself without
+        # waiting to be refused.
+        decision = getattr(request.state, "rate_limit", None)
+        if decision is not None:
+            for header, value in decision.headers.items():
+                response.headers[header] = value
         logger.info(
             "request.completed",
             extra={
@@ -433,6 +493,7 @@ async def _ensure_indexes(
     document_repository=None,
     chunk_repository=None,
     conversation_repository=None,
+    usage_repository=None,
 ) -> None:
     """Create indexes, tolerating failure.
 
@@ -448,6 +509,8 @@ async def _ensure_indexes(
             await document_repository.ensure_indexes()
         if chunk_repository is not None:
             await chunk_repository.ensure_indexes()
+        if usage_repository is not None:
+            await usage_repository.ensure_indexes()
         if conversation_repository is not None:
             await conversation_repository.ensure_indexes()
     except Exception:

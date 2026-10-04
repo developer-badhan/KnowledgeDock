@@ -33,6 +33,9 @@ from knowledgedock.infrastructure.repositories.conversation_repository import (
 from knowledgedock.infrastructure.repositories.document_repository import (
     InMemoryDocumentRepository,
 )
+from knowledgedock.infrastructure.repositories.usage_repository import (
+    InMemoryAIUsageRepository,
+)
 from knowledgedock.infrastructure.repositories.user_repository import InMemoryUserRepository
 from knowledgedock.infrastructure.repositories.workspace_repository import (
     InMemoryWorkspaceRepository,
@@ -263,6 +266,8 @@ def _build_app(
     embeddings=None,
     llm=None,
     conversations=None,
+    usage=None,
+    clock=None,
     processing_enabled=False,
 ):
     return create_app(
@@ -276,6 +281,8 @@ def _build_app(
         embeddings=embeddings or NullEmbeddingProvider(),
         llm=llm or NullLLMProvider(),
         conversation_repository=conversations or InMemoryConversationRepository(),
+        usage_repository=usage or InMemoryAIUsageRepository(),
+        clock=clock,
         processing_enabled=processing_enabled,
     )
 

@@ -18,10 +18,12 @@ from knowledgedock.application.workspaces.use_cases import AuthorizeWorkspace
 from knowledgedock.domain.errors import (
     AuthenticationFailed,
     PermissionDenied,
+    RateLimited,
     ServiceUnavailable,
 )
 from knowledgedock.domain.users import User
 from knowledgedock.domain.workspaces import WorkspaceAccess
+from knowledgedock.infrastructure.rate_limit import principal_key
 
 SESSION_COOKIE_NAME = "kd_session"
 # Cross-site POSTs are exactly what login and logout are, so every cookie is
@@ -145,3 +147,40 @@ async def require_workspace_owner(
     if not access.is_owner:
         raise PermissionDenied("Only the workspace owner can do that.")
     return access
+
+
+def enforce_rate_limit(request: Request, route: str) -> None:
+    """Count this request against the caller's quota and refuse when over.
+
+    Only the endpoints that spend provider quota are limited. Applying it
+    everywhere would rate-limit the frontend's asset requests and the health
+    checks Render uses to decide the service is alive, which would turn a
+    deliberate limiter into an outage.
+
+    The refusal carries `Retry-After`, so a well-behaved client backs off instead
+    of retrying into the same wall.
+    """
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    if limiter is None or not limiter.limit:
+        return
+    user = getattr(request.state, "user", None)
+    workspace_id = None
+    path_id = request.path_params.get("workspace_id")
+    if path_id:
+        try:
+            workspace_id = UUID(str(path_id))
+        except ValueError:
+            workspace_id = None
+    key = principal_key(
+        user_id=user.id if user is not None else None,
+        workspace_id=workspace_id,
+        route=route,
+    )
+    decision = limiter.check(key)
+    request.state.rate_limit = decision
+    if not decision.allowed:
+        raise RateLimited(
+            "Too many requests for this workspace. The AI provider's free tier is "
+            "rate limited, so the limit protects everyone's quota.",
+            detail=f"retry_after={decision.retry_after}s",
+        )

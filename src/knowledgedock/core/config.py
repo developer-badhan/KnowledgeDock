@@ -81,6 +81,7 @@ class Settings:
     gemini_chat_temperature: float
     llm_history_max_messages: int
     llm_max_question_characters: int
+    ai_rate_limit_per_minute: int
     ai_retry_backoff_seconds: float
 
     # -- Uploads -----------------------------------------------------------
@@ -152,6 +153,8 @@ class Settings:
             raise ValueError("LLM_HISTORY_MAX_MESSAGES cannot be negative")
         if self.llm_max_question_characters < 1:
             raise ValueError("LLM_MAX_QUESTION_CHARACTERS must be at least 1")
+        if self.ai_rate_limit_per_minute < 0:
+            raise ValueError("AI_RATE_LIMIT_PER_MINUTE cannot be negative")
         if not self.allowed_content_types:
             raise ValueError("ALLOWED_CONTENT_TYPES must list at least one content type")
 
@@ -248,6 +251,10 @@ def load_settings(source: Any | None = None) -> Settings:
         gemini_chat_temperature=optional("GEMINI_CHAT_TEMPERATURE", 0.2, float),
         llm_history_max_messages=optional("LLM_HISTORY_MAX_MESSAGES", 10, int),
         llm_max_question_characters=optional("LLM_MAX_QUESTION_CHARACTERS", 2000, int),
+        # 20 questions a minute per user is far above human reading speed and far
+        # below Gemini's free per-minute ceiling, so it bounds a runaway client
+        # without getting in a real user's way.
+        ai_rate_limit_per_minute=optional("AI_RATE_LIMIT_PER_MINUTE", 20, int),
         # Base for exponential backoff with full jitter on provider retries.
         ai_retry_backoff_seconds=optional("AI_RETRY_BACKOFF_SECONDS", 1.0, float),
         storage_dir=optional("STORAGE_DIR", "/tmp/knowledgedock/uploads"),

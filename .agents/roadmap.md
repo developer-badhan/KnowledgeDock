@@ -17,11 +17,11 @@ Phase 04 Documents           [x]  7/7
 Phase 05 Ingestion           [x]  7/7
 Phase 06 Retrieval           [x]  6/6
 Phase 07 RAG                 [x]  7/7
-Phase 08 Reliability         [ ]  0/8
+Phase 08 Reliability         [x]  8/8
 Phase 09 Frontend            [ ]  0/6
 Phase 10 Production Readiness [ ]  0/9
 
-Overall: [███████████████░░░░░░░░░░░░░░░░░░░░░░░░] 67% (47/67)
+Overall: [████████████████████░░░░░░░░░░░░░░░░░░░░] 82% (55/67)
 ```
 
 Legend: `[ ]` not started · `[x]` complete
@@ -676,16 +676,50 @@ Branch: `phase-08-reliability`
 
 Scope: timeouts, retries, rate limiting, error handling, usage tracking, logging.
 
-- [ ] `ai_usage` collection + usage recording per request (provider, model, tokens, duration)
-- [ ] Structured JSON logging with `request_id` correlation
-- [ ] Request ID middleware + access log (method, path, status, duration)
-- [ ] Global exception handlers — no stack traces in responses
-- [ ] Typed error taxonomy (validation/auth/authz/not-found/conflict/provider/internal)
-- [ ] Bounded retry with exponential backoff + jitter for provider calls
-- [ ] Timeout configuration for all outbound AI calls
-- [ ] Rate limiting per user/workspace (Redis only if in-process limiting proves insufficient)
+- [x] `ai_usage` collection + usage recording per request (provider, model, tokens, duration)
+- [x] Structured JSON logging with `request_id` correlation
+- [x] Request ID middleware + access log (method, path, status, duration)
+- [x] Global exception handlers — no stack traces in responses
+- [x] Typed error taxonomy (validation/auth/authz/not-found/conflict/provider/internal)
+- [x] Bounded retry with exponential backoff + jitter for provider calls
+- [x] Timeout configuration for all outbound AI calls
+- [x] Rate limiting per user/workspace (Redis only if in-process limiting proves insufficient)
 
-Notes:
+Notes: four of the eight items were already built in Phase 01 and Phase 05 --
+request-id middleware, the access log, JSON logging, the error taxonomy, the
+exception handlers, bounded retry with jitter, and provider timeouts. They had
+never been asserted directly, so this phase adds the tests that prove the
+behaviour rather than rewriting working code.
+
+`ai_usage` records every AI call, and *failed* calls especially: a provider
+failing 40% of the time looks nothing like one failing 0.5% until you can count
+them. Recording is a decorator over the provider interfaces rather than provider
+internals, so the providers stay about HTTP, the same accounting covers the stubs,
+and no call can slip past unrecorded. A broken recorder never fails the request --
+observability that can take down the product when the database hiccups is worse
+than no observability. Token counts are flagged `estimated` because Gemini's
+embedContent does not report usage while generateContent does.
+
+Rate limiting is per user with a sliding window, and it protects provider quota
+rather than defending against abuse. Fixed windows were rejected because they let
+a caller spend the full allowance at 11:59 and again at 12:00, which is the exact
+burst a limiter exists to prevent. It is in-process by design and that has a
+stated cost: state resets on deploy, and N instances allow N times the rate. The
+roadmap's Redis escape hatch stays unused until that is measured.
+
+Rate-limit headers are attached in the middleware rather than on the raised error,
+because FastAPI runs exception handlers inside the middleware -- so the 429
+arrives as a normal response carrying them, and successful calls publish the
+remaining budget so a client can pace itself.
+
+Limiting only the provider-quota endpoints is deliberate. Applying it everywhere
+would throttle the frontend's assets and Render's liveness probe, turning a
+protective limiter into a self-inflicted outage.
+
+Also closed: `AI_PROVIDER=null` now answers 503 from /search and /query. The null
+providers produce well-formed, meaningless results -- hash-ranked chunks and a
+stub that quotes the nearest one -- and nothing in the response distinguished
+those from real answers.
 
 ---
 
@@ -811,3 +845,7 @@ Roadmap updated
 | 54 | 07 | Only the *retrieval* query is widened with history | A follow-up like 'what about the deadline?' has no subject and retrieves nothing on its own. Widening only the retrieval query fixes that without a second LLM round trip, while the question sent to the model stays the user's own words — so the answer is about what they asked, not a blend of recent turns. |
 | 55 | 07 | The user turn is persisted before generation, not after | If the provider fails, the question is already in history, so the retry is a follow-up rather than a hole. An assistant turn is written only when an answer really exists, so a failure is never recorded as an empty answer. |
 | 56 | 07 | `conversations` and `messages` are separate collections | An embedded history grows without bound and Atlas caps a document at 16 MB, so one chatty conversation would eventually stop being insertable — and the failure would surface as a write error on an ordinary request. |
+| 57 | 08 | `AI_PROVIDER=null` makes /search and /query answer 503 | The null providers produce well-formed, meaningless output -- hash-ranked chunks and a stub that quotes whichever chunk hashed closest -- and nothing in the response distinguished those from real answers. A confidently wrong RAG answer is worse than an error. They stay wired up for ingestion, where they exercise the document lifecycle, and the two endpoints that would answer a person refuse. |
+| 58 | 08 | AI usage is recorded by a decorator over the provider interfaces, failures included | Keeps the providers about HTTP, covers the stubs with the same accounting, and cannot be bypassed by a new call site. Recording failures matters most: a provider failing 40% of the time looks nothing like one failing 0.5% until you can count them. A broken recorder never fails the request. |
+| 59 | 08 | Rate limiting is a per-user sliding window, in process | The threat is quota, not abuse: one client in a retry loop can spend a workspace's daily allowance in seconds, and the symptom is a wall of 503s hours later pointing at nothing. Fixed windows were rejected because they permit double-spend at the boundary -- the exact burst a limiter prevents. In-process per the roadmap's Redis escape hatch, with the cost stated: state resets on deploy and N instances allow N times the rate. |
+| 60 | 08 | Only the provider-quota endpoints are limited | Limiting every route would throttle the frontend's assets and Render's liveness probe, turning a protective limiter into a self-inflicted outage. |
