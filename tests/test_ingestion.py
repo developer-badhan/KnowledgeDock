@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import time
 import uuid
 from datetime import timedelta
 
@@ -317,7 +318,15 @@ class TestL2Normalize:
         assert l2_normalize([0.0, 0.0]) == [0.0, 0.0]
 
 
-def _provider(handler, *, retries: int = 3) -> GeminiEmbeddingProvider:
+def _provider(
+    handler, *, retries: int = 3, rpm: int = 6000, burst: int = 1000
+) -> GeminiEmbeddingProvider:
+    """A provider whose pacing is fast enough not to slow the suite down.
+
+    `rpm=6000` is a 10ms interval: the default of 5 a minute would make every
+    embedding test in this file take minutes. Pacing itself is tested
+    deliberately in TestPacer with an explicit slow rate.
+    """
     return GeminiEmbeddingProvider(
         api_key="test-key",
         model="gemini-embedding-001",
@@ -325,6 +334,8 @@ def _provider(handler, *, retries: int = 3) -> GeminiEmbeddingProvider:
         timeout_seconds=1.0,
         max_retries=retries,
         backoff_seconds=0.001,
+        requests_per_minute=rpm,
+        burst=burst,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
@@ -814,3 +825,83 @@ class TestStatusVisibility:
         assert body["status"] == "failed"
         assert body["processing_error"]
         assert "Traceback" not in body["processing_error"]
+
+
+class TestPacer:
+    """Pacing is what keeps a large upload from being answered with 429.
+
+    The free embedding tier rejects bursts, and retry backoff cannot fix a call
+    rate that sits above quota. These tests pin the rate itself, since a
+    regression here only shows up in production as a failed upload.
+    """
+
+    async def test_calls_are_spaced_at_the_configured_rate(self) -> None:
+        # 600 rpm is a 100ms interval, so four calls need ~300ms: observable
+        # without making the suite slow.
+        provider = _provider(
+            lambda request: httpx.Response(200, json=_body([1.0, 0, 0, 0])), rpm=600, burst=1
+        )
+        started = time.monotonic()
+        await provider.embed(["a", "b", "c", "d"], task_type="RETRIEVAL_DOCUMENT")
+        elapsed = time.monotonic() - started
+        assert elapsed >= 0.25, f"expected pacing across 4 calls, took {elapsed:.3f}s"
+
+    async def test_burst_allowance_is_spent_immediately(self) -> None:
+        """The first `burst` calls must not wait.
+
+        This is what keeps an interactive question from queueing behind a
+        document with hundreds of chunks.
+        """
+        provider = _provider(
+            lambda request: httpx.Response(200, json=_body([1.0, 0, 0, 0])), rpm=60, burst=4
+        )
+        started = time.monotonic()
+        await provider.embed(["a", "b", "c"], task_type="RETRIEVAL_DOCUMENT")
+        elapsed = time.monotonic() - started
+        # A 1s interval would have cost ~2s here.
+        assert elapsed < 0.5, f"burst was not honoured, took {elapsed:.3f}s"
+
+    async def test_rate_is_shared_across_concurrent_callers(self) -> None:
+        """Ingestion and query embedding share one budget against one API key."""
+        provider = _provider(
+            lambda request: httpx.Response(200, json=_body([1.0, 0, 0, 0])), rpm=600, burst=1
+        )
+        started = time.monotonic()
+        await asyncio.gather(
+            provider.embed(["a", "b"], task_type="RETRIEVAL_DOCUMENT"),
+            provider.embed(["c", "d"], task_type="RETRIEVAL_QUERY"),
+        )
+        elapsed = time.monotonic() - started
+        # Four calls at 100ms intervals, not two independent 100ms budgets.
+        assert elapsed >= 0.25, f"callers did not share the budget, took {elapsed:.3f}s"
+
+    async def test_pacing_does_not_gate_the_call_order(self) -> None:
+        """Waiting must not reorder or drop texts.
+
+        A limiter that reorders would silently pair a chunk with the wrong
+        vector, which retrieval would happily return as a wrong answer.
+        """
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            seen.append(body["content"]["parts"][0]["text"])
+            return httpx.Response(200, json=_body([1.0, 0, 0, 0]))
+
+        provider = _provider(handler, rpm=600, burst=1)
+        batch = await provider.embed(["first", "second", "third"], task_type="RETRIEVAL_DOCUMENT")
+        assert seen == ["first", "second", "third"]
+        assert [e.text for e in batch.embeddings] == ["first", "second", "third"]
+
+    def test_zero_requests_per_minute_is_rejected(self) -> None:
+        # Zero would divide by zero, turning pacing into an instant hang.
+        with pytest.raises(ValueError, match="requests_per_minute"):
+            GeminiEmbeddingProvider(
+                api_key="k",
+                model="gemini-embedding-001",
+                dimensions=4,
+                timeout_seconds=1.0,
+                max_retries=1,
+                backoff_seconds=0.001,
+                requests_per_minute=0,
+            )

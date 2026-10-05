@@ -32,6 +32,7 @@ import asyncio
 import logging
 import math
 import random
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -86,6 +87,44 @@ def l2_normalize(vector: list[float]) -> list[float]:
     return [component / magnitude for component in vector]
 
 
+class _Pacer:
+    """Spaces outbound calls to a fixed rate, with a small burst allowance.
+
+    Gemini's free tier answers a burst of embedding requests with 429, and
+    retry backoff cannot rescue that: backing off a rate that is structurally
+    above quota just fails later. The request rate has to be lowered instead.
+
+    A token bucket rather than a sleep between every call, because a query
+    embedding should not wait behind a document with hundreds of chunks. The
+    bucket starts full, so the first few calls go out immediately, and a caller
+    arriving mid-ingestion still gets a slot.
+
+    The lock is held only while deciding, never while sleeping, so one paced
+    waiter cannot block the others from making progress.
+    """
+
+    def __init__(self, requests_per_minute: int, burst: int) -> None:
+        self._interval = 60.0 / requests_per_minute
+        self._burst = max(1, burst)
+        self._tokens = float(self._burst)
+        self._updated = time.monotonic()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                self._tokens = min(
+                    self._burst, self._tokens + (now - self._updated) / self._interval
+                )
+                self._updated = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                wait = (1.0 - self._tokens) * self._interval
+            await asyncio.sleep(wait)
+
+
 class GeminiEmbeddingProvider:
     def __init__(
         self,
@@ -96,14 +135,19 @@ class GeminiEmbeddingProvider:
         timeout_seconds: float,
         max_retries: int,
         backoff_seconds: float,
+        requests_per_minute: int = 5,
+        burst: int = 5,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        if requests_per_minute < 1:
+            raise ValueError("requests_per_minute must be at least 1")
         self._api_key = api_key
         self._model = model
         self._dimensions = dimensions
         self._timeout = httpx.Timeout(timeout_seconds)
         self._max_retries = max_retries
         self._backoff = backoff_seconds
+        self._limiter = _Pacer(requests_per_minute, burst)
         self._client = client
         self._owns_client = client is None
 
@@ -127,6 +171,9 @@ class GeminiEmbeddingProvider:
         try:
             results = []
             for text in texts:
+                # Paced before every call, including the first, so ingestion and
+                # query embedding share one budget against the same API key.
+                await self._limiter.acquire()
                 vector = await self._embed_one(client, text, task_type)
                 results.append(
                     EmbeddedText(

@@ -83,6 +83,8 @@ class Settings:
     llm_max_question_characters: int
     ai_rate_limit_per_minute: int
     ai_retry_backoff_seconds: float
+    ai_embedding_requests_per_minute: int
+    ai_embedding_burst: int
 
     # -- Uploads -----------------------------------------------------------
     storage_dir: Path
@@ -142,6 +144,12 @@ class Settings:
             raise ValueError(
                 f"GEMINI_EMBEDDING_MAX_INPUT_TOKENS must be 1-{GEMINI_MAX_INPUT_TOKENS}"
             )
+        # Zero would make the pacing interval infinite and stall every ingestion
+        # forever, which reads as a hang rather than a misconfiguration.
+        if self.ai_embedding_requests_per_minute < 1:
+            raise ValueError("AI_EMBEDDING_REQUESTS_PER_MINUTE must be at least 1")
+        if self.ai_embedding_burst < 1:
+            raise ValueError("AI_EMBEDDING_BURST must be at least 1")
         # Raw cosine, so the range is -1.0..1.0 and negative is meaningful:
         # opposing text genuinely scores below zero. Clamping the bound to 0.0
         # would silently accept a threshold that rejects everything.
@@ -263,6 +271,17 @@ def load_settings(source: Any | None = None) -> Settings:
         ai_rate_limit_per_minute=optional("AI_RATE_LIMIT_PER_MINUTE", 20, int),
         # Base for exponential backoff with full jitter on provider retries.
         ai_retry_backoff_seconds=optional("AI_RETRY_BACKOFF_SECONDS", 1.0, float),
+        # Pacing for outbound embedding calls. Gemini's free tier allows only a
+        # handful of embedding requests a minute, and retry backoff cannot fix a
+        # call rate that structurally exceeds quota -- it only smooths spikes.
+        # Five a minute is the free-tier ceiling for gemini-embedding-001, so a
+        # large document takes real time instead of failing. Raise this if the
+        # key is on a paid tier.
+        ai_embedding_requests_per_minute=optional("AI_EMBEDDING_REQUESTS_PER_MINUTE", 5, int),
+        # Bucket capacity. It lets an interactive query embed immediately instead
+        # of queueing behind a document that is mid-ingestion, while still
+        # bounding the sustained rate. Keep at least 1.
+        ai_embedding_burst=optional("AI_EMBEDDING_BURST", 5, int),
         storage_dir=optional("STORAGE_DIR", "/tmp/knowledgedock/uploads"),
         max_upload_size_mb=optional("MAX_UPLOAD_SIZE_MB", 10, int),
         allowed_content_types=tuple(content_types or ()),

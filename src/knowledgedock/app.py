@@ -717,4 +717,6 @@ def _build_embedding_provider(settings: Settings):
         timeout_seconds=settings.ai_timeout_seconds,
         max_retries=settings.ai_max_retries,
         backoff_seconds=settings.ai_retry_backoff_seconds,
+        requests_per_minute=settings.ai_embedding_requests_per_minute,
+        burst=settings.ai_embedding_burst,
     )
