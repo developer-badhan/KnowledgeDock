@@ -8,6 +8,7 @@ checks a rule that already has a JSON equivalent, through the form.
 
 from __future__ import annotations
 
+import pathlib
 import re
 
 import pytest
@@ -488,6 +489,85 @@ class TestUploadScreen:
         assert response.status_code == 303
         api = owner.client.get(f"/workspaces/{ws['id']}/documents").json()
         assert api["items"][0]["status"] == "pending"
+
+    def test_an_htmx_upload_is_told_to_navigate_not_given_a_document(self, env, owner, ws):
+        """A 303 into an htmx swap puts a whole HTML document in a one-line div.
+
+        The dialog was `hx-target="#uploadFeedback"`, so a successful upload
+        followed the redirect inside the XHR and swapped the entire dashboard into
+        that div. The user saw a blank dialog and no confirmation. `HX-Redirect`
+        hands navigation back to the browser instead.
+        """
+        response = owner.client.post(
+            f"/ui/workspaces/{ws['id']}/documents",
+            files={"file": ("notes.txt", TEXT, "text/plain")},
+            headers={"HX-Request": "true"},
+        )
+
+        assert response.status_code == 200
+        assert response.headers["HX-Redirect"] == f"/w/{ws['id']}"
+        # The body must not be a page: it is swapped into the feedback div.
+        assert "<html" not in response.text.lower()
+
+    def test_a_plain_form_post_still_redirects_normally(self, env, owner, ws):
+        # Without JavaScript there is no htmx, and the 303 is the only way back.
+        response = owner.client.post(
+            f"/ui/workspaces/{ws['id']}/documents",
+            files={"file": ("notes.txt", TEXT, "text/plain")},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 303
+        assert response.headers["location"] == f"/w/{ws['id']}"
+
+    def test_a_refused_htmx_upload_still_swaps_the_message(self, env, owner, ws):
+        # The failure path has to keep returning a fragment, not a redirect.
+        response = owner.client.post(
+            f"/ui/workspaces/{ws['id']}/documents",
+            files={"file": ("evil.exe", b"MZ\x90\x00", "application/x-msdownload")},
+            headers={"HX-Request": "true"},
+        )
+
+        assert response.status_code in (400, 415, 422)
+        assert "<html" not in response.text.lower()
+
+    def test_the_dialog_declares_the_hooks_app_js_needs(self, env, owner, ws):
+        page = owner.client.get(f"/w/{ws['id']}")
+
+        # Each of these was missing or wrong while the button was unclickable.
+        assert 'class="modal fade"' in page.text
+        assert 'id="kdUploadForm"' in page.text
+        assert "hx-disabled-elt" in page.text
+        assert 'id="uploadSpinner"' in page.text
+        assert 'id="kdUploadStatus"' in page.text
+
+    def test_every_bootstrap_attribute_in_the_markup_is_implemented(self, env, owner, ws):
+        """The failure behind the dead "New workspace" button.
+
+        Only Bootstrap's CSS is loaded, never its bundle, so every
+        `data-bs-toggle` is a promise app.js has to keep. `collapse` was used and
+        never implemented, which left a button that looked live and did nothing.
+        """
+        from knowledgedock.api import ui
+
+        # src/knowledgedock/api/ui.py -> src/knowledgedock
+        package = pathlib.Path(ui.__file__).parent.parent
+        source = (package / "static" / "app.js").read_text()
+        toggles = {"modal", "collapse"}
+        used = {
+            match
+            for name in ("dashboard.html", "_upload_modal.html")
+            for match in re.findall(
+                r'data-bs-toggle="([^"]+)"',
+                (package / "templates" / name).read_text(),
+            )
+        }
+
+        assert used <= toggles
+        for kind in used:
+            assert f'data-bs-toggle="{kind}"' in source, (
+                f'the markup uses data-bs-toggle="{kind}" but app.js never handles it'
+            )
 
     def test_the_form_uses_the_same_validation_as_the_api(self, env, owner, ws):
         # A form must not be a looser path around the content-type allowlist.

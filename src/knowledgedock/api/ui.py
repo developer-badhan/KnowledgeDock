@@ -345,6 +345,16 @@ async def ui_upload(
             message=exc.message,
             status_code=exc.status_code,
         )
+    if request.headers.get("HX-Request"):
+        # A 303 here is followed by htmx inside the XHR, and what comes back is the
+        # whole dashboard document -- which then gets swapped into #uploadFeedback,
+        # a one-line div. The user saw a blank dialog and no confirmation.
+        # HX-Redirect is htmx's own instruction to navigate the browser for real,
+        # so they land on the dashboard with the new row actually in the table.
+        response = HTMLResponse("", status_code=status.HTTP_200_OK)
+        response.headers["HX-Redirect"] = f"/w/{access.workspace_id}"
+        return response
+    # A plain form post, with JavaScript unavailable or not yet loaded.
     return RedirectResponse(f"/w/{access.workspace_id}", status_code=status.HTTP_303_SEE_OTHER)
 
 

@@ -1367,6 +1367,18 @@ textarea.kd-form-control {
    Spinner & Loading
    ======================================== */
 
+.kd-modal-status {
+  margin: var(--kd-space-3) 0 0;
+  font-size: var(--kd-text-sm);
+  color: var(--kd-text-secondary);
+}
+
+.kd-btn[disabled],
+.kd-btn:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
 .kd-spinner {
   display: flex;
   align-items: center;
@@ -1765,6 +1777,10 @@ textarea.kd-form-control {
 
 .modal:not([hidden]) {
   display: block;
+  /* Belt and braces with the `show` class app.js adds. Bootstrap ships
+     `.fade:not(.show){opacity:0}`, so a dialog whose class list ever fails to
+     land would be laid out and invisible -- a backdrop with nothing in it. */
+  opacity: 1;
 }
 
 .modal:not([hidden]) .modal-dialog {

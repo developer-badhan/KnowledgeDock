@@ -2,6 +2,7 @@
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
       <form class="modal-body"
+            id="kdUploadForm"
             method="post"
             enctype="multipart/form-data"
             action="/ui/workspaces/{{ active.id }}/documents"
@@ -9,7 +10,8 @@
             hx-encoding="multipart/form-data"
             hx-target="#uploadFeedback"
             hx-swap="innerHTML"
-            hx-indicator="#uploadSpinner">
+            hx-indicator="#uploadSpinner"
+            hx-disabled-elt="find button[type='submit']">
         <h2 class="modal-title" id="uploadTitle">Upload a document</h2>
         <p class="kd-modal-sub">
           Accepted: PDF, Word, HTML, Markdown and plain text. Re-uploading identical
@@ -25,6 +27,9 @@
           <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
           Uploading…
         </div>
+        {# Read by app.js so the wait is described in words as well as shown by the
+           spinner, which a screen reader would otherwise never announce. #}
+        <p class="kd-modal-status" id="kdUploadStatus">Choose a file, then select Upload.</p>
         <div id="uploadFeedback" aria-live="polite"></div>
         <div class="kd-modal-actions">
           <button type="button" class="kd-btn kd-btn-ghost" data-bs-dismiss="modal">Close</button>

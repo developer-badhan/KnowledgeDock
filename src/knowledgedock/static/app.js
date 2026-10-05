@@ -117,6 +117,13 @@
     lastFocused = trigger || document.activeElement;
     modal.hidden = false;
     modal.setAttribute("aria-hidden", "false");
+    /* The `show` class is not decoration. Bootstrap's stylesheet carries
+       `.fade:not(.show){opacity:0}`, and the dialog is marked `class="modal fade"`.
+       Lifting `hidden` alone fixes `display` (app.css supplies that rule) but
+       leaves the element at zero opacity, so the dialog opened as an invisible
+       box behind a visible backdrop: one press did nothing a user could see, and
+       the second press was swallowed by the early return above. */
+    modal.classList.add("show");
     document.body.classList.add("kd-modal-open");
 
     backdrop = document.createElement("div");
@@ -134,6 +141,7 @@
     if (modal.hidden) return;
     modal.hidden = true;
     modal.setAttribute("aria-hidden", "true");
+    modal.classList.remove("show");
     document.body.classList.remove("kd-modal-open");
     if (backdrop) {
       backdrop.removeEventListener("click", close);
@@ -194,6 +202,68 @@
   });
 })();
 
+/* ------------------------------------------------------------------ collapse */
+/* `data-bs-toggle="collapse"` appeared in the markup for the "New workspace"
+   disclosure, and nothing implemented it: only Bootstrap's CSS is loaded, never
+   its bundle, so `.collapse:not(.show){display:none}` hid the panel and the
+   button was dead. The button looked live, which is the worst way for a control
+   to fail.
+
+   Implemented here for the same reason the modal is -- the attributes already
+   promise the behaviour, and the alternative is markup that lies. Toggling `show`
+   is all Bootstrap's CSS needs; `hidden` is carried alongside it so the collapsed
+   panel leaves the accessibility tree even if that stylesheet is unavailable. */
+(function () {
+  "use strict";
+
+  var panels = function (selector) {
+    return Array.prototype.slice.call(document.querySelectorAll(selector));
+  };
+
+  var setOpen = function (trigger, open) {
+    var selector = trigger.getAttribute("data-bs-target");
+    if (!selector) return;
+
+    var panel = document.querySelector(selector);
+    if (!panel) return;
+
+    panel.classList.toggle("show", open);
+    panel.hidden = !open;
+    trigger.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+
+  document.addEventListener("click", function (event) {
+    if (!event.target || typeof event.target.closest !== "function") return;
+
+    var trigger = event.target.closest('[data-bs-toggle="collapse"]');
+    if (!trigger) return;
+    event.preventDefault();
+
+    var expanded = trigger.getAttribute("aria-expanded") === "true";
+    // Only one panel in this app, but a disclosure that left two open would be
+    // the kind of thing nobody notices until it ships.
+    panels('[data-bs-toggle="collapse"]').forEach(function (other) {
+      if (other !== trigger) setOpen(other, false);
+    });
+    setOpen(trigger, !expanded);
+  });
+
+  // Escape closes an open panel, matching the modal's behaviour.
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape") return;
+    panels('[data-bs-toggle="collapse"][aria-expanded="true"]').forEach(function (trigger) {
+      setOpen(trigger, false);
+      trigger.focus();
+    });
+  });
+
+  // Start from a known state: markup ships collapsed, and a panel left open by a
+  // previous render must not inherit `hidden` incorrectly.
+  panels('[data-bs-toggle="collapse"]').forEach(function (trigger) {
+    setOpen(trigger, trigger.getAttribute("aria-expanded") === "true");
+  });
+})();
+
 /* --------------------------------------------------------------- dropzone */
 (function () {
   "use strict";
@@ -228,6 +298,52 @@
       input.files = e.dataTransfer.files;
       show();
     }
+  });
+})();
+
+/* ------------------------------------------------- upload: in-flight feedback */
+/* The dialog's submit button stayed enabled for the whole round trip, so a slow
+   upload looked identical to a dead one and the only honest thing to do was to
+   press it again. The request is now visibly acknowledged the moment it starts:
+   the button disables and says so, and it is restored only if the upload failed,
+   because a successful one navigates away. */
+(function () {
+  "use strict";
+
+  var form = document.getElementById("kdUploadForm");
+  if (!form) return;
+
+  var submit = form.querySelector('button[type="submit"]');
+  var idle = submit ? submit.textContent : "";
+  var label = document.getElementById("kdUploadStatus");
+  var quiet = label ? label.textContent : "";
+  var filename = document.getElementById("kdFileName");
+  var picker = document.getElementById("kdFile");
+
+  form.addEventListener("htmx:beforeRequest", function () {
+    if (submit) {
+      submit.disabled = true;
+      submit.textContent = "Uploading…";
+    }
+    if (label) label.textContent = "Sending your file. Large PDFs can take a moment.";
+  });
+
+  form.addEventListener("htmx:afterRequest", function (event) {
+    if (event.detail.successful) {
+      // The server answers a good upload with HX-Redirect, so the browser is
+      // already navigating to the dashboard where the new row appears. Clearing
+      // the picker first means a reload does not offer the same file again.
+      if (picker) picker.value = "";
+      if (filename) filename.textContent = "";
+      return;
+    }
+
+    // Refused: let the person try again without reopening the dialog.
+    if (submit) {
+      submit.disabled = false;
+      submit.textContent = idle;
+    }
+    if (label) label.textContent = quiet;
   });
 })();
 
