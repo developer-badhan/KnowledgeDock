@@ -409,31 +409,136 @@
   });
 })();
 
-/* --------------------------------------------------------- ask: clear + focus */
+/* --------------------------------------------------------- ask: wait experience */
+/* An answer can take tens of seconds on the free tier, and a page that does
+   nothing is indistinguishable from a broken one. Each ask therefore gets an
+   immediate placeholder: the question shown back as a turn plus a "thinking"
+   turn with an animated bar and typing dots, so the page visibly works while
+   the request is out. The question box and the Ask button are disabled while
+   it is in flight so a second Enter cannot stack a request, and the
+   placeholder is removed when the real answer (or the error) arrives. */
 (function () {
   "use strict";
 
-  var form = document.getElementById("kdAskForm");
-  if (!form) return;
+  var calm = window.matchMedia
+    ? window.matchMedia("(prefers-reduced-motion: reduce)")
+    : null;
 
-  form.addEventListener("htmx:afterRequest", function (event) {
-    if (event.detail.successful) {
-      var box = document.getElementById("kdQuestion");
-      if (box) box.value = "";
+  function scrollTo(node) {
+    if (node && typeof node.scrollIntoView === "function") {
+      node.scrollIntoView({
+        block: "nearest",
+        behavior: calm && calm.matches ? "auto" : "smooth",
+      });
+    }
+  }
+
+  function turnElement(role, className) {
+    var article = document.createElement("article");
+    article.className =
+      "kd-turn kd-turn-" + role + (className ? " " + className : "");
+    var head = document.createElement("div");
+    head.className = "kd-turn-role";
+    head.textContent = role === "user" ? "You asked" : "Answer";
+    article.appendChild(head);
+    return article;
+  }
+
+  /* The main form and every follow-up form inside an answer share one wait
+     experience because they share the same slow request. */
+  document.querySelectorAll("#kdAskForm, form.kd-followup").forEach(function (form) {
+    var region = document.getElementById("kdAnswer");
+    if (!region) return;
+    var box = form.querySelector('[name="question"]');
+    var button = form.querySelector('button[type="submit"]');
+    var asked = null;
+    var think = null;
+
+    function busy() {
+      if (!box) return;
+      var text = box.value.trim();
+      if (!text) return;
+
+      var empty = region.querySelector(".kd-empty");
+      if (empty) empty.parentNode.removeChild(empty);
+
+      asked = turnElement("user");
+      var askedText = document.createElement("p");
+      askedText.className = "kd-turn-text";
+      askedText.textContent = text;
+      asked.appendChild(askedText);
+
+      think = turnElement("assistant", "kd-think");
+      think.setAttribute("role", "status");
+
+      var line = document.createElement("p");
+      line.className = "kd-think-line";
+      line.textContent = "Searching this workspace and reading the documents…";
+      think.appendChild(line);
+
+      var bar = document.createElement("div");
+      bar.className = "kd-think-bar";
+      bar.setAttribute("aria-hidden", "true");
+      var fill = document.createElement("span");
+      fill.className = "kd-think-bar-fill";
+      bar.appendChild(fill);
+      think.appendChild(bar);
+
+      var dots = document.createElement("div");
+      dots.className = "kd-typing";
+      dots.setAttribute("aria-hidden", "true");
+      for (var i = 0; i < 3; i += 1) {
+        var dot = document.createElement("span");
+        dot.className = "kd-typing-dot";
+        dots.appendChild(dot);
+      }
+      think.appendChild(dots);
+
+      // A follow-up form sits inside the previous answer's turn, so the new
+      // question belongs after that turn, not after the form's controls.
+      var anchor = form.closest("article.kd-turn");
+      region.insertBefore(asked, anchor ? anchor.nextSibling : null);
+      region.insertBefore(think, asked.nextSibling);
+
+      scrollTo(think);
+
+      box.disabled = true;
+      box.setAttribute("aria-busy", "true");
+      if (button) button.disabled = true;
+    }
+
+    function idle(successful) {
+      if (think && think.parentNode) think.parentNode.removeChild(think);
+      think = null;
+      if (asked && !successful && asked.parentNode) {
+        asked.parentNode.removeChild(asked);
+      }
+      asked = null;
+      if (box) {
+        box.disabled = false;
+        box.removeAttribute("aria-busy");
+        if (successful) box.value = "";
+      }
+      if (button) button.disabled = false;
+      if (successful) scrollTo(region.lastElementChild);
+    }
+
+    form.addEventListener("htmx:beforeRequest", busy);
+    form.addEventListener("htmx:afterRequest", function (event) {
+      idle(event.detail.successful);
+    });
+
+    // Enter submits; Shift+Enter inserts a newline. A textarea where Enter
+    // silently discards a half-written question is a common way to lose one.
+    if (box && box.tagName === "TEXTAREA") {
+      box.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          form.requestSubmit();
+        }
+      });
     }
   });
-
-  // Enter submits; Shift+Enter inserts a newline. A textarea where Enter
-  // silently discards a half-written question is a common way to lose one.
-  var question = document.getElementById("kdQuestion");
-  if (question) {
-    question.addEventListener("keydown", function (event) {
-      if (event.key === "Enter" && !event.shiftKey) {
-        event.preventDefault();
-        form.requestSubmit();
-      }
-    });
-  }
 })();
 
 /* --------------------------------------------------- keep answers in view */

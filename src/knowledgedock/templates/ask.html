@@ -33,7 +33,7 @@
               id="kdAskForm"
               hx-post="/ui/workspaces/{{ active.id }}/ask"
               hx-target="#kdAnswer"
-              hx-swap="innerHTML"
+              hx-swap="beforeend"
               hx-indicator="#kdAskSpinner">
           {% if conversation_id %}
             <input type="hidden" name="conversation_id" value="{{ conversation_id }}" />

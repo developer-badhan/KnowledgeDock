@@ -428,11 +428,11 @@ async def ui_ask(
 ) -> Response:
     """Ask a question, returning the answer as a fragment.
 
-    A form post, not HTMX: the answer can take several seconds, and a full-page
-    submit shows progress and survives a slow provider honestly. The HTMX path is
-    still used for the follow-up question form inside the answer fragment.
-    HTMX with hx-indicator was considered but full-page POST is simpler and more
-    reliable for long-running AI calls on the free tier.
+    Both the main form and the follow-up form post through HTMX with the answer
+    region as the swap target. The main form appends (``beforeend``) rather than
+    replaces so a conversation accumulates; the client also appends an animated
+    "thinking" turn for the tens of seconds a slow free-tier provider can take,
+    then removes it when this fragment lands.
     """
     try:
         parsed = UUID(conversation_id) if conversation_id else None

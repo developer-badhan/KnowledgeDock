@@ -753,6 +753,29 @@ class TestAskScreen:
         assert page.status_code == 200
         assert "Ask Acme" in page.text
 
+    def test_the_ask_page_declares_the_wait_experience_hooks(self, env, owner, ws):
+        """An ask can take tens of seconds, so the page promises an animated
+        "thinking" turn while the request is out instead of looking frozen."""
+        from knowledgedock.api import ui
+
+        package = pathlib.Path(ui.__file__).parent.parent
+        page = owner.client.get(f"/w/{ws['id']}/ask")
+        # Turns must accumulate, or an answer wipes every previous exchange.
+        assert 'hx-target="#kdAnswer"' in page.text
+        assert 'hx-swap="beforeend"' in page.text
+        assert 'id="kdAskForm"' in page.text
+
+        source = (package / "static" / "app.js").read_text()
+        assert "htmx:beforeRequest" in source
+        assert "htmx:afterRequest" in source
+        assert "form.kd-followup" in source
+        assert "kd-think" in source
+
+        css = (package / "static" / "app.css").read_text()
+        assert ".kd-think-bar-fill" in css
+        assert ".kd-typing-dot" in css
+        assert "@keyframes kd-typing-pulse" in css
+
     def test_asking_returns_an_answer_fragment_with_citations(self, env, owner, ws):
         seed(env[1], ws["id"])
         response = owner.client.post(

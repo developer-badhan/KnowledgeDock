@@ -1612,6 +1612,81 @@ textarea.kd-form-control {
   font-size: var(--kd-text-sm);
 }
 
+/* Waiting turn: shown while an answer is being generated so the page visibly
+   works instead of sitting still for the tens of seconds the free tier can
+   take. The dot/bar animations are all disabled globally under
+   prefers-reduced-motion (see the Reduced Motion section). */
+.kd-think-line {
+  color: var(--kd-text-secondary);
+  font-size: var(--kd-text-sm);
+  line-height: var(--kd-leading-relaxed);
+  margin: 0;
+}
+
+.kd-think-bar {
+  position: relative;
+  height: 6px;
+  margin-top: var(--kd-space-3);
+  border-radius: var(--kd-radius-full);
+  background: var(--kd-bg-secondary);
+  overflow: hidden;
+}
+
+.kd-think-bar-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 38%;
+  border-radius: var(--kd-radius-full);
+  background: var(--kd-accent);
+  animation: kd-think-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes kd-think-slide {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+.kd-typing {
+  display: inline-flex;
+  gap: var(--kd-space-2);
+  margin-top: var(--kd-space-3);
+}
+
+.kd-typing-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--kd-text-muted);
+  animation: kd-typing-pulse 1.3s ease-in-out infinite;
+}
+
+.kd-typing-dot:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.kd-typing-dot:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes kd-typing-pulse {
+  0%,
+  60%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
 /* Sources */
 .kd-sources {
   margin-top: var(--kd-space-4);
