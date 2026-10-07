@@ -770,6 +770,11 @@ class TestAskScreen:
         assert "htmx:afterRequest" in source
         assert "form.kd-followup" in source
         assert "kd-think" in source
+        # htmx 2 only swaps 2xx/3xx by default, so an error response (an outage,
+        # a refused question) would be dropped and the page would go quiet after
+        # the loader. The ask target must force the swap.
+        assert 'target.id !== "kdAnswer"' in source
+        assert "shouldSwap = true" in source
 
         css = (package / "static" / "app.css").read_text()
         assert ".kd-think-bar-fill" in css
@@ -955,6 +960,49 @@ class TestNullProviderRefusalInTheUi:
             follow_redirects=False,
         )
         assert response.status_code == 303
+
+
+class TestAskProviderFailureInTheUi:
+    """A provider outage must answer the ask with a readable rejection.
+
+    `ProviderUnavailable` is not an `AppError`, so it used to fall through the
+    generic 500, which htmx 2 then dropped (its default reply handling swaps only
+    2xx/3xx). The result was a page that went quiet after the animated loader:
+    no answer, and no explanation.
+    """
+
+    def test_a_provider_failure_answers_with_a_rejection_fragment(self, settings):
+        from knowledgedock.infrastructure.security.errors import ProviderUnavailable
+
+        class Down:
+            model, provider_name = "down", "gemini"
+
+            async def generate_answer(self, prompt):
+                raise ProviderUnavailable("provider down")
+
+        chunks = InMemoryChunkRepository()
+        app = _build_app(
+            settings,
+            InMemoryUserRepository(),
+            InMemoryWorkspaceRepository(),
+            chunks=chunks,
+            embeddings=AnyQuery(),
+            llm=Down(),
+        )
+        with TestClient(app) as client:
+            actor = make_actor(client, "boss")
+            ws = workspace_of(actor.client)
+            seed(chunks, ws["id"])
+            response = actor.client.post(
+                f"/ui/workspaces/{ws['id']}/ask",
+                data={"question": "How do I rotate a key?"},
+                headers={"HX-Request": "true"},
+            )
+        assert response.status_code == 502
+        assert "Could not answer" in response.text
+        assert "unavailable" in response.text
+        # The rejection is the small conversation fragment, not an error page.
+        assert "<html" not in response.text.lower()
 
 
 class TestNoFrontendRegression:

@@ -510,9 +510,6 @@
     function idle(successful) {
       if (think && think.parentNode) think.parentNode.removeChild(think);
       think = null;
-      if (asked && !successful && asked.parentNode) {
-        asked.parentNode.removeChild(asked);
-      }
       asked = null;
       if (box) {
         box.disabled = false;
@@ -520,7 +517,10 @@
         if (successful) box.value = "";
       }
       if (button) button.disabled = false;
-      if (successful) scrollTo(region.lastElementChild);
+      // The asked turn stays either way: the question was stored before the
+      // request, so keeping it matches the history and an error fragment that
+      // follows it reads as an honest rejection rather than a blank.
+      if (region.lastElementChild) scrollTo(region.lastElementChild);
     }
 
     form.addEventListener("htmx:beforeRequest", busy);
@@ -564,5 +564,23 @@
         behavior: calm && calm.matches ? "auto" : "smooth",
       });
     }
+  });
+})();
+
+/* ------------------------------------------------------- ask errors swap in */
+/* htmx 2's default response handling swaps only 2xx (and 3xx); a 4xx/5xx ask
+   response -- a refused question, a provider outage -- is treated as an error
+   and dropped, so after the thinking animation the page would go quiet and no
+   rejection would ever be seen. The ask target is a conversation, where an
+   honest rejection is itself the output, so ask-error responses are forced in. */
+(function () {
+  "use strict";
+
+  if (!window.htmx || !document.getElementById("kdAnswer")) return;
+
+  document.body.addEventListener("htmx:beforeSwap", function (event) {
+    if (!event.detail.isError) return;
+    if (!event.detail.target || event.detail.target.id !== "kdAnswer") return;
+    event.detail.shouldSwap = true;
   });
 })();

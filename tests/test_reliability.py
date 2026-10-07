@@ -556,6 +556,66 @@ class TestRateLimitedOverHttp:
         assert any(r.operation is AIOperation.EMBED for r in repo.records)
 
 
+class TestProviderFailureSurfacesAs502:
+    """An external AI outage must be reported as the documented 502 ProviderError.
+
+    `infrastructure/security/errors.py` promises provider failures a 502 rather
+    than a generic 500, a distinction the UI relies on to show a rejection
+    instead of saying "something went wrong".
+    """
+
+    def test_the_json_api_reports_a_provider_outage_as_502(self, settings, workspaces):
+        from uuid import uuid4
+
+        from knowledgedock.infrastructure.repositories.chunk_repository import (
+            InMemoryChunkRepository,
+        )
+        from knowledgedock.infrastructure.repositories.user_repository import (
+            InMemoryUserRepository,
+        )
+        from tests.conftest import _build_app
+        from tests.test_rag import AnyQuery
+
+        class Down:
+            model, provider_name = "down", "gemini"
+
+            async def generate_answer(self, prompt):
+                raise ProviderUnavailable("provider down")
+
+        chunks = InMemoryChunkRepository()
+        app = _build_app(
+            settings,
+            InMemoryUserRepository(),
+            workspaces,
+            chunks=chunks,
+            embeddings=AnyQuery(),
+            llm=Down(),
+        )
+        with TestClient(app) as client:
+            actor = make_actor(client, "boss")
+            ws = workspace_of(actor.client)
+            doc = uuid4()
+            chunks.chunks[doc] = [
+                {
+                    "workspace_id": ws["id"],
+                    "document_id": doc,
+                    "chunk_index": 0,
+                    "text": "Rotate keys from the Security page.",
+                    "embedding": [0.98, 0.2],
+                    "character_count": 33,
+                    "filename": "handbook.txt",
+                }
+            ]
+            response = actor.client.post(
+                f"/workspaces/{ws['id']}/query", json={"question": "How do I rotate a key?"}
+            )
+        assert response.status_code == 502
+        body = response.json()["error"]
+        assert body["code"] == "provider_error"
+        assert "unavailable" in body["message"]
+        assert "provider down" not in body["message"]
+
+
 class TestLoggingIsJson:
     def test_the_formatter_emits_one_json_object_per_record(self, capsys):
         import logging

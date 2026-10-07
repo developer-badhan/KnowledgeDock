@@ -54,6 +54,7 @@ from knowledgedock.domain.documents import Document
 from knowledgedock.domain.errors import AppError, NotFound, ValidationFailed
 from knowledgedock.domain.users import User
 from knowledgedock.domain.workspaces import Workspace, WorkspaceAccess
+from knowledgedock.infrastructure.security.errors import AiProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -441,6 +442,22 @@ async def ui_ask(
     try:
         answer = await use_case.execute(
             access.workspace_id, question, conversation_id=parsed, user_id=user.id
+        )
+    except AiProviderError:
+        # An external AI outage is not the client's fault. The use case logs the
+        # full failure; here it becomes a readable rejection the ask UI can swap
+        # in, using the same fragment as every other ask failure. htmx 2 does not
+        # swap 4xx/5xx by default, so app.js forces the swap for this target.
+        logger.error(
+            "ui.ask.provider_failed",
+            extra={"workspace_id": str(access.workspace_id), "user_id": str(user.id)},
+        )
+        return HTMLResponse(
+            _ask_error(
+                request,
+                "The AI provider is unavailable right now. Please try again in a moment.",
+            ),
+            status_code=status.HTTP_502_BAD_GATEWAY,
         )
     except (AppError, ValueError) as exc:
         # The JSON API rejects a blank question at the schema; a form post has no

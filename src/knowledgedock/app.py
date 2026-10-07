@@ -107,6 +107,7 @@ from knowledgedock.infrastructure.repositories.workspace_repository import (
     MongoWorkspaceRepository,
     UnavailableWorkspaceRepository,
 )
+from knowledgedock.infrastructure.security.errors import AiProviderError
 from knowledgedock.infrastructure.security.passwords import PasswordHasher
 from knowledgedock.infrastructure.security.tokens import TokenService
 from knowledgedock.infrastructure.storage import LocalFileStorage
@@ -636,6 +637,32 @@ def _register_error_handlers(app: FastAPI) -> None:
             503,
             str(ErrorCode.SERVICE_UNAVAILABLE),
             "The service is temporarily unavailable. Please try again.",
+            templates=app.state.templates,
+        )
+
+    @app.exception_handler(AiProviderError)
+    async def handle_provider_error(request: Request, exc: AiProviderError) -> Response:
+        """An external AI outage is the provider's fault, not the client's.
+
+        `infrastructure/security/errors.py` promises provider failures a 502 with
+        no diagnosis leaked across the boundary; until now nothing delivered that
+        promise, and an unhandled `AiProviderError` fell through to the generic
+        500. The UI ask route catches this type itself (it renders its own
+        rejection fragment), so this handler is what the JSON API sees.
+        """
+        logger.error(
+            "provider.request_failed",
+            extra={
+                "request_id": getattr(request.state, "request_id", None),
+                "path": request.url.path,
+                "error": type(exc).__name__,
+            },
+        )
+        return _error_response(
+            request,
+            502,
+            str(ErrorCode.PROVIDER_ERROR),
+            "The AI provider is unavailable right now. Please try again in a moment.",
             templates=app.state.templates,
         )
 
