@@ -32,8 +32,11 @@ from knowledgedock.domain.documents import Document, DocumentStatus
 from knowledgedock.infrastructure.ai.embedding import EmbeddingProvider
 from knowledgedock.infrastructure.repositories.chunk_repository import ChunkRepository
 from knowledgedock.infrastructure.repositories.document_repository import DocumentRepository
+from knowledgedock.infrastructure.repositories.document_text_repository import (
+    DocumentTextRepository,
+)
 from knowledgedock.infrastructure.security.errors import AiProviderError
-from knowledgedock.infrastructure.storage import FileStorage
+from knowledgedock.infrastructure.storage import FileStorage, StorageError
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +64,7 @@ class ProcessDocument:
         documents: DocumentRepository,
         chunks: ChunkRepository,
         storage: FileStorage,
+        texts: DocumentTextRepository,
         embeddings: EmbeddingProvider,
         chunk_size: int,
         chunk_overlap: int,
@@ -71,6 +75,7 @@ class ProcessDocument:
         self._documents = documents
         self._chunks = chunks
         self._storage = storage
+        self._texts = texts
         self._embeddings = embeddings
         self._chunk_size = chunk_size
         self._chunk_overlap = chunk_overlap
@@ -108,7 +113,7 @@ class ProcessDocument:
 
         try:
             return await self._run(started)
-        except (ExtractionError, AiProviderError) as exc:
+        except (ExtractionError, AiProviderError, StorageError) as exc:
             return await self._fail(started, str(exc), detail=exc.__dict__.get("detail"))
         except Exception as exc:
             # Never let one bad document stall the worker. SKILL.md §17.
@@ -121,7 +126,7 @@ class ProcessDocument:
             )
 
     async def _run(self, document: Document) -> IngestionResult:
-        raw = self._read(document)
+        raw = await self._read(document)
         text = normalize(raw)
         if not text:
             return await self._fail(document, "No usable text could be extracted.")
@@ -183,10 +188,30 @@ class ProcessDocument:
             model=batch.model,
         )
 
-    def _read(self, document: Document) -> str:
-        extractor = extractor_for(document.content_type)
-        with self._storage.open(document.storage_path) as handle:
-            return extractor.extract(handle)
+    async def _read(self, document: Document) -> str:
+        """Prefer the text extracted at upload; fall back to the stored file.
+
+        Extraction happens at upload (see UploadDocument) and that text is the
+        only durable copy — a deploy can wipe the file storage and leave the row
+        behind. Most documents therefore never touch the file here. Old rows are
+        still honored until a re-upload re-extracts them.
+        """
+        text = await self._texts.get(document.id)
+        if text is not None:
+            return text
+        return self._extract_from_file(document)
+
+    def _extract_from_file(self, document: Document) -> str:
+        try:
+            with self._storage.open(document.storage_path) as handle:
+                return extractor_for(document.content_type).extract(handle)
+        except StorageError:
+            raise
+        except ExtractionError as exc:
+            raise ExtractionError(
+                f"Could not read {document.filename!r} for processing ({exc}). "
+                "Re-upload the file to process it."
+            ) from exc
 
     async def _fail(
         self, document: Document, message: str, *, detail: str | None = None

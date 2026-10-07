@@ -227,18 +227,33 @@ class TestSettingsValidation:
     def test_zero_embedding_rate_is_rejected(self, load_from) -> None:
         # Zero would divide by zero in the pacer and hang ingestion forever,
         # which presents as a silent stall rather than a startup error.
-        with pytest.raises(ValueError, match="AI_EMBEDDING_REQUESTS_PER_MINUTE"):
-            load_from("AI_EMBEDDING_REQUESTS_PER_MINUTE=0\n")
+        with pytest.raises(ValueError, match="AI_EMBEDDING_ITEMS_PER_MINUTE"):
+            load_from("AI_EMBEDDING_ITEMS_PER_MINUTE=0\n")
 
     def test_zero_embedding_burst_is_rejected(self, load_from) -> None:
-        with pytest.raises(ValueError, match="AI_EMBEDDING_BURST"):
-            load_from("AI_EMBEDDING_BURST=0\n")
+        with pytest.raises(ValueError, match="AI_EMBEDDING_BURST_ITEMS"):
+            load_from("AI_EMBEDDING_BURST_ITEMS=0\n")
+
+    def test_embedding_batch_size_is_bounded(self, load_from) -> None:
+        # batchEmbedContents refuses more than 100 items, and a batch of zero
+        # would make the pacer spend nothing.
+        with pytest.raises(ValueError, match="AI_EMBEDDING_BATCH_SIZE"):
+            load_from("AI_EMBEDDING_BATCH_SIZE=101\n")
+        with pytest.raises(ValueError, match="AI_EMBEDDING_BATCH_SIZE"):
+            load_from("AI_EMBEDDING_BATCH_SIZE=0\n")
+
+    def test_embedding_burst_must_cover_a_batch(self, load_from) -> None:
+        # A burst smaller than one batch would make every batch wait, defeating
+        # the burst's purpose of keeping small files instant.
+        with pytest.raises(ValueError, match="AI_EMBEDDING_BURST_ITEMS"):
+            load_from("AI_EMBEDDING_BURST_ITEMS=10\nAI_EMBEDDING_BATCH_SIZE=50\n")
 
     def test_embedding_rate_defaults_to_the_free_tier(self, settings) -> None:
-        # The default has to fit the free tier; a higher one reproduces the 429
+        # The defaults have to fit the free tier; higher ones reproduce the 429
         # failures this pacing exists to prevent.
-        assert settings.ai_embedding_requests_per_minute == 5
-        assert settings.ai_embedding_burst >= 1
+        assert settings.ai_embedding_batch_size == 50
+        assert settings.ai_embedding_items_per_minute == 120
+        assert settings.ai_embedding_burst_items == 240
 
     def test_similarity_score_outside_zero_to_one_is_rejected(self, load_from) -> None:
         with pytest.raises(ValueError, match="RETRIEVAL_MIN_SCORE"):

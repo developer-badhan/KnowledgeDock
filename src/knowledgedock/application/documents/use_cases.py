@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import BinaryIO
 from uuid import UUID, uuid4
 
+from knowledgedock.application.ingestion.extractors import ExtractionError, extractor_for, normalize
 from knowledgedock.domain.documents import (
     Document,
     DocumentPage,
@@ -36,6 +37,9 @@ from knowledgedock.domain.workspaces import WorkspaceAccess
 from knowledgedock.infrastructure.repositories.document_repository import (
     DocumentRepository,
     DuplicateContentError,
+)
+from knowledgedock.infrastructure.repositories.document_text_repository import (
+    DocumentTextRepository,
 )
 from knowledgedock.infrastructure.storage import FileStorage, hash_stream
 
@@ -95,12 +99,14 @@ class UploadDocument:
         self,
         repository: DocumentRepository,
         storage: FileStorage,
+        texts: DocumentTextRepository,
         *,
         allowed_content_types: tuple[str, ...],
         max_bytes: int,
     ) -> None:
         self._repository = repository
         self._storage = storage
+        self._texts = texts
         self._allowed = allowed_content_types
         self._max_bytes = max_bytes
 
@@ -124,12 +130,22 @@ class UploadDocument:
         content_hash, size = self._measure(source)
         validate_size(size, self._max_bytes)
 
+        # Text is extracted here, before anything is written, for two reasons.
+        # It is the only durable copy: Render's disk is ephemeral, so waiting
+        # until the worker runs lets a deploy between upload and processing
+        # destroy the file and strand the document. And an unreadable upload
+        # fails now, with the reason at hand, instead of silently becoming a
+        # FAILED document later.
+        text = self._extract(source, resolved_type)
+
         existing = await self._repository.find_by_content(access.workspace_id, content_hash)
         if existing is not None:
-            return await self._replace(existing, access, display_name, resolved_type, source, size)
+            return await self._replace(
+                existing, access, display_name, resolved_type, source, size, text=text
+            )
 
         return await self._create(
-            access, user, display_name, resolved_type, source, content_hash, size
+            access, user, display_name, resolved_type, source, content_hash, size, text=text
         )
 
     # -- helpers ----------------------------------------------------------
@@ -138,6 +154,15 @@ class UploadDocument:
         content_hash, size = hash_stream(source)
         source.seek(0)
         return content_hash, size
+
+    def _extract(self, source: BinaryIO, content_type: str) -> str:
+        """Extract and normalize the document's text, refusing a bad file now."""
+        source.seek(0)
+        try:
+            raw = extractor_for(content_type).extract(source)
+        except ExtractionError as exc:
+            raise ValidationFailed(str(exc)) from exc
+        return normalize(raw)
 
     async def _create(
         self,
@@ -148,8 +173,11 @@ class UploadDocument:
         source: BinaryIO,
         content_hash: str,
         size: int,
+        text: str,
     ) -> UploadResult:
         document_id = uuid4()
+        # Extraction consumed the stream; rewind so the same bytes are stored.
+        source.seek(0)
         stored_path, written = self._storage.save(
             access.workspace_id, content_hash, content_type, source
         )
@@ -183,8 +211,16 @@ class UploadDocument:
             with contextlib.suppress(OSError, ValueError):
                 source.seek(0)
             return await self._replace(
-                winner, access, filename, content_type, source, written, replace_bytes=written
+                winner,
+                access,
+                filename,
+                content_type,
+                source,
+                written,
+                replace_bytes=written,
+                text=text,
             )
+        await self._texts.save(document_id, access.workspace_id, text)
 
         logger.info(
             "documents.uploaded",
@@ -193,6 +229,7 @@ class UploadDocument:
                 "workspace_id": str(access.workspace_id),
                 "content_type": content_type,
                 "size_bytes": written,
+                "chars": len(text),
             },
         )
         return UploadResult(document=document, replaced=False)
@@ -207,6 +244,7 @@ class UploadDocument:
         size: int,
         *,
         replace_bytes: int | None = None,
+        text: str,
     ) -> UploadResult:
         """Re-upload of identical content: update in place, never duplicate."""
         updated = existing.requeued_with_new_content(
@@ -221,6 +259,7 @@ class UploadDocument:
         # Chunks belong to the previous processing run. Leaving them would let
         # Phase 6 retrieve text that no longer matches the stored file.
         removed = await self._repository.delete_chunks(existing.id)
+        await self._texts.save(existing.id, access.workspace_id, text)
         await self._repository.replace_for_reupload(updated)
         logger.info(
             "documents.reupload_replaced",
@@ -229,6 +268,7 @@ class UploadDocument:
                 "workspace_id": str(access.workspace_id),
                 "chunks_discarded": removed,
                 "previous_status": str(existing.status),
+                "chars": len(text),
             },
         )
         return UploadResult(document=updated, replaced=True)
@@ -266,12 +306,15 @@ class GetDocument:
 
 
 class DeleteDocument:
-    def __init__(self, repository: DocumentRepository, storage: FileStorage) -> None:
+    def __init__(
+        self, repository: DocumentRepository, storage: FileStorage, texts: DocumentTextRepository
+    ) -> None:
         self._repository = repository
         self._storage = storage
+        self._texts = texts
 
     async def execute(self, workspace_id: UUID, document_id: UUID) -> Document:
-        """Hard delete: document row, its chunks, and the stored file.
+        """Hard delete: document row, its chunks, its text, and the stored file.
 
         Not a soft delete. Render's filesystem is ephemeral and the extracted text
         lives in MongoDB, so a recoverable tombstone would guard against nothing
@@ -286,6 +329,7 @@ class DeleteDocument:
         if not deleted:  # pragma: no cover - row vanished mid-request
             raise NotFound("Document not found.")
 
+        await self._texts.delete(document_id)
         self._storage.delete(document.storage_path)
         logger.info(
             "documents.deleted",

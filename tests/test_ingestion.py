@@ -22,7 +22,6 @@ import io
 import json
 import time
 import uuid
-from datetime import timedelta
 
 import httpx
 import pytest
@@ -319,13 +318,18 @@ class TestL2Normalize:
 
 
 def _provider(
-    handler, *, retries: int = 3, rpm: int = 6000, burst: int = 1000
+    handler,
+    *,
+    retries: int = 3,
+    batch_size: int = 10,
+    items_per_minute: int = 6000,
+    burst_items: int = 1000,
 ) -> GeminiEmbeddingProvider:
     """A provider whose pacing is fast enough not to slow the suite down.
 
-    `rpm=6000` is a 10ms interval: the default of 5 a minute would make every
-    embedding test in this file take minutes. Pacing itself is tested
-    deliberately in TestPacer with an explicit slow rate.
+    `items_per_minute=6000` is a 10ms interval: the default of 120 a minute
+    would make every embedding test in this file spend 500ms. Pacing itself is
+    tested deliberately in TestPacer with an explicit slow rate.
     """
     return GeminiEmbeddingProvider(
         api_key="test-key",
@@ -334,14 +338,25 @@ def _provider(
         timeout_seconds=1.0,
         max_retries=retries,
         backoff_seconds=0.001,
-        requests_per_minute=rpm,
-        burst=burst,
+        batch_size=batch_size,
+        items_per_minute=items_per_minute,
+        burst_items=burst_items,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
 
 def _body(values: list[float]) -> dict:
-    return {"embedding": {"values": values}}
+    """A `batchEmbedContents` response for exactly one requested text."""
+    return {"embeddings": [{"values": values}]}
+
+
+def _batch_body(count: int, values: list[float] | None = None) -> dict:
+    """A `batchEmbedContents` response answering `count` texts."""
+    return {
+        "embeddings": [
+            {"values": values if values is not None else [1.0, 0.0, 0.0, 0.0]} for _ in range(count)
+        ]
+    }
 
 
 class TestGeminiProvider:
@@ -365,8 +380,8 @@ class TestGeminiProvider:
         await provider.embed(["a"], task_type="RETRIEVAL_QUERY")
         await provider.embed(["b"], task_type="RETRIEVAL_DOCUMENT")
 
-        assert seen[0]["taskType"] == "RETRIEVAL_QUERY"
-        assert seen[1]["taskType"] == "RETRIEVAL_DOCUMENT"
+        assert seen[0]["requests"][0]["taskType"] == "RETRIEVAL_QUERY"
+        assert seen[1]["requests"][0]["taskType"] == "RETRIEVAL_DOCUMENT"
 
     async def test_sends_the_requested_output_dimensionality(self) -> None:
         seen: list[dict] = []
@@ -377,7 +392,7 @@ class TestGeminiProvider:
 
         await _provider(handler).embed(["a"], task_type="RETRIEVAL_DOCUMENT")
 
-        assert seen[0]["outputDimensionality"] == 4
+        assert seen[0]["requests"][0]["outputDimensionality"] == 4
 
     async def test_retries_a_rate_limit_then_succeeds(self) -> None:
         attempts = {"n": 0}
@@ -454,7 +469,7 @@ class TestGeminiProvider:
             await provider.embed(["a"], task_type="RETRIEVAL_DOCUMENT")
 
     async def test_rejects_an_empty_vector(self) -> None:
-        provider = _provider(lambda r: httpx.Response(200, json={"embedding": {"values": []}}))
+        provider = _provider(lambda r: httpx.Response(200, json=_body([])))
 
         with pytest.raises(ProviderUnavailable):
             await provider.embed(["a"], task_type="RETRIEVAL_DOCUMENT")
@@ -478,6 +493,12 @@ def rig(tmp_path):
 
     documents = InMemoryDocumentRepository()
     chunks = InMemoryChunkRepository()
+
+    from knowledgedock.infrastructure.repositories.document_text_repository import (
+        InMemoryDocumentTextRepository,
+    )
+
+    texts = InMemoryDocumentTextRepository()
     embeddings = NullEmbeddingProvider(dimensions=32)
 
     def build_process(**overrides):
@@ -490,6 +511,7 @@ def rig(tmp_path):
             "documents": documents,
             "chunks": chunks,
             "storage": storage,
+            "texts": texts,
             "embeddings": embeddings,
             "chunk_size": 200,
             "chunk_overlap": 30,
@@ -506,7 +528,6 @@ def rig(tmp_path):
         process=process,
         poll_interval_seconds=0.01,
         max_attempts=3,
-        stale_after_minutes=30,
     )
 
     def enqueue(
@@ -542,6 +563,7 @@ def rig(tmp_path):
         "storage": storage,
         "documents": documents,
         "chunks": chunks,
+        "texts": texts,
         "worker": worker,
         "process": process,
         "build_process": build_process,
@@ -550,7 +572,6 @@ def rig(tmp_path):
             process=build_process(documents=repo),
             poll_interval_seconds=0.01,
             max_attempts=3,
-            stale_after_minutes=30,
         ),
         "enqueue": enqueue,
     }
@@ -602,6 +623,34 @@ class TestPipeline:
 
         assert result.status is DocumentStatus.FAILED
         assert "too short" in (result.error or "") or "No usable text" in (result.error or "")
+
+    async def test_processes_from_extracted_text_without_the_raw_file(self, rig) -> None:
+        """Deploys wipe Render's disk; the extracted text must be enough.
+
+        This pins the README.md-fails-with-StorageError class of bug: a deploy
+        landing between upload and processing used to destroy the only copy of
+        the text. The upload now stores it in MongoDB, so the worker never needs
+        the file.
+        """
+
+        document = rig["enqueue"]()
+        await rig["texts"].save(document.id, document.workspace_id, TEXT)
+        rig["storage"].delete(document.storage_path)  # what a redeploy does to /tmp
+
+        result = await rig["process"].execute(document)
+
+        assert result.status is DocumentStatus.READY
+
+    async def test_missing_file_and_text_fails_with_the_storage_reason(self, rig) -> None:
+        """Legacy rows without extracted text report the real cause, not a crash."""
+
+        document = rig["enqueue"]()
+        rig["storage"].delete(document.storage_path)
+
+        result = await rig["process"].execute(document)
+
+        assert result.status is DocumentStatus.FAILED
+        assert "stored file is missing" in (result.error or "")
 
     async def test_failure_is_persisted_for_diagnosis(self, rig) -> None:
         document = rig["enqueue"](b"   ")
@@ -693,37 +742,28 @@ class TestWorker:
 
     async def test_reclaims_a_document_interrupted_while_processing(self, rig) -> None:
         """A spin-down mid-job leaves PROCESSING with nothing to move it."""
-        from dataclasses import replace as dc_replace
-
-        document = rig["enqueue"](status=DocumentStatus.PROCESSING)
-        # Backdate it: staleness is measured from updated_at, so a document that
-        # started a second ago is in progress, not abandoned.
-        rig["documents"].documents[document.id] = dc_replace(
-            document, updated_at=utcnow() - timedelta(minutes=45)
-        )
+        rig["enqueue"](status=DocumentStatus.PROCESSING)
 
         requeued = await rig["worker"].reclaim_abandoned()
 
         assert requeued == 1
         assert all(d.status is DocumentStatus.PENDING for d in rig["documents"].documents.values())
 
-    async def test_leaves_a_recent_processing_document_alone(self, rig) -> None:
-        """Otherwise two workers could take the same document."""
+    async def test_reclaims_a_freshly_started_processing_document(self, rig) -> None:
+        """No staleness cut-off: on a single worker, any PROCESSING row at
+        startup was left by a process that died, however recently it moved to
+        PROCESSING. This is the deploy-interrupts-SKILL.md case — a document
+        newer than a 30-minute cut-off used to strand forever."""
         rig["enqueue"](status=DocumentStatus.PROCESSING)
 
-        assert await rig["worker"].reclaim_abandoned() == 0
-
-    async def test_reclaims_only_the_stale_ones(self, rig) -> None:
-        from dataclasses import replace as dc_replace
-
-        stale = rig["enqueue"](b"stale interrupted document", status=DocumentStatus.PROCESSING)
-        fresh = rig["enqueue"](b"fresh in-progress document", status=DocumentStatus.PROCESSING)
-        rig["documents"].documents[stale.id] = dc_replace(
-            stale, updated_at=utcnow() - timedelta(minutes=45)
-        )
-
         assert await rig["worker"].reclaim_abandoned() == 1
-        assert rig["documents"].documents[fresh.id].status is DocumentStatus.PROCESSING
+
+    async def test_reclaims_every_processing_document_regardless_of_age(self, rig) -> None:
+        rig["enqueue"](b"first interrupted", status=DocumentStatus.PROCESSING)
+        rig["enqueue"](b"second interrupted", status=DocumentStatus.PROCESSING)
+
+        assert await rig["worker"].reclaim_abandoned() == 2
+        assert all(d.status is DocumentStatus.PENDING for d in rig["documents"].documents.values())
 
     async def test_retries_a_failed_document_within_budget(self, rig) -> None:
         rig["enqueue"](b"   ", status=DocumentStatus.FAILED, attempts=1)
@@ -833,27 +873,38 @@ class TestPacer:
     The free embedding tier rejects bursts, and retry backoff cannot fix a call
     rate that sits above quota. These tests pin the rate itself, since a
     regression here only shows up in production as a failed upload.
+
+    The throttled unit is the ITEM, not the HTTP call: quota is charged per
+    embedded text even on `batchEmbedContents`, so batching must not spend it
+    ~batch_size times faster than configured.
     """
 
-    async def test_calls_are_spaced_at_the_configured_rate(self) -> None:
-        # 600 rpm is a 100ms interval, so four calls need ~300ms: observable
-        # without making the suite slow.
+    async def test_items_are_spaced_at_the_configured_rate(self) -> None:
+        # 600 items/min is a 100ms interval, so four items need ~300ms beyond
+        # the instant burst: observable without making the suite slow. batch_size
+        # of one keeps each item its own call, so pacing here is per item.
         provider = _provider(
-            lambda request: httpx.Response(200, json=_body([1.0, 0, 0, 0])), rpm=600, burst=1
+            lambda request: httpx.Response(200, json=_batch_body(1)),
+            batch_size=1,
+            items_per_minute=600,
+            burst_items=1,
         )
         started = time.monotonic()
         await provider.embed(["a", "b", "c", "d"], task_type="RETRIEVAL_DOCUMENT")
         elapsed = time.monotonic() - started
-        assert elapsed >= 0.25, f"expected pacing across 4 calls, took {elapsed:.3f}s"
+        assert elapsed >= 0.25, f"expected pacing across 4 items, took {elapsed:.3f}s"
 
     async def test_burst_allowance_is_spent_immediately(self) -> None:
-        """The first `burst` calls must not wait.
+        """The first `burst_items` must not wait.
 
-        This is what keeps an interactive question from queueing behind a
-        document with hundreds of chunks.
+        This is what keeps a small file and an interactive question from
+        queueing behind a document with hundreds of chunks.
         """
         provider = _provider(
-            lambda request: httpx.Response(200, json=_body([1.0, 0, 0, 0])), rpm=60, burst=4
+            lambda request: httpx.Response(200, json=_batch_body(1)),
+            batch_size=1,
+            items_per_minute=60,
+            burst_items=4,
         )
         started = time.monotonic()
         await provider.embed(["a", "b", "c"], task_type="RETRIEVAL_DOCUMENT")
@@ -864,7 +915,10 @@ class TestPacer:
     async def test_rate_is_shared_across_concurrent_callers(self) -> None:
         """Ingestion and query embedding share one budget against one API key."""
         provider = _provider(
-            lambda request: httpx.Response(200, json=_body([1.0, 0, 0, 0])), rpm=600, burst=1
+            lambda request: httpx.Response(200, json=_batch_body(1)),
+            batch_size=1,
+            items_per_minute=600,
+            burst_items=1,
         )
         started = time.monotonic()
         await asyncio.gather(
@@ -872,30 +926,32 @@ class TestPacer:
             provider.embed(["c", "d"], task_type="RETRIEVAL_QUERY"),
         )
         elapsed = time.monotonic() - started
-        # Four calls at 100ms intervals, not two independent 100ms budgets.
+        # Four items at 100ms intervals, not two independent 100ms budgets.
         assert elapsed >= 0.25, f"callers did not share the budget, took {elapsed:.3f}s"
 
     async def test_pacing_does_not_gate_the_call_order(self) -> None:
         """Waiting must not reorder or drop texts.
 
-        A limiter that reorders would silently pair a chunk with the wrong
+        A limiter that reordered would silently pair a chunk with the wrong
         vector, which retrieval would happily return as a wrong answer.
         """
         seen: list[str] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content)
-            seen.append(body["content"]["parts"][0]["text"])
-            return httpx.Response(200, json=_body([1.0, 0, 0, 0]))
+            seen.extend(
+                part["text"] for req in body["requests"] for part in req["content"]["parts"]
+            )
+            return httpx.Response(200, json=_batch_body(len(body["requests"])))
 
-        provider = _provider(handler, rpm=600, burst=1)
+        provider = _provider(handler, batch_size=1, items_per_minute=600, burst_items=1)
         batch = await provider.embed(["first", "second", "third"], task_type="RETRIEVAL_DOCUMENT")
         assert seen == ["first", "second", "third"]
         assert [e.text for e in batch.embeddings] == ["first", "second", "third"]
 
-    def test_zero_requests_per_minute_is_rejected(self) -> None:
+    def test_zero_items_per_minute_is_rejected(self) -> None:
         # Zero would divide by zero, turning pacing into an instant hang.
-        with pytest.raises(ValueError, match="requests_per_minute"):
+        with pytest.raises(ValueError, match="items_per_minute"):
             GeminiEmbeddingProvider(
                 api_key="k",
                 model="gemini-embedding-001",
@@ -903,5 +959,47 @@ class TestPacer:
                 timeout_seconds=1.0,
                 max_retries=1,
                 backoff_seconds=0.001,
-                requests_per_minute=0,
+                items_per_minute=0,
             )
+
+    def test_burst_must_cover_a_single_batch(self) -> None:
+        # Otherwise the first batch always waits, defeating the burst.
+        with pytest.raises(ValueError, match="burst_items"):
+            GeminiEmbeddingProvider(
+                api_key="k",
+                model="gemini-embedding-001",
+                dimensions=4,
+                timeout_seconds=1.0,
+                max_retries=1,
+                backoff_seconds=0.001,
+                batch_size=50,
+                burst_items=10,
+            )
+
+    def test_batch_size_cannot_exceed_the_provider_ceiling(self) -> None:
+        with pytest.raises(ValueError, match="batch_size"):
+            GeminiEmbeddingProvider(
+                api_key="k",
+                model="gemini-embedding-001",
+                dimensions=4,
+                timeout_seconds=1.0,
+                max_retries=1,
+                backoff_seconds=0.001,
+                batch_size=101,
+            )
+
+    async def test_batches_exceed_the_provider_ceiling_are_split(self) -> None:
+        """batchEmbedContents accepts up to 100 texts; larger uploads split."""
+        files: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            files.append(body)
+            return httpx.Response(200, json=_batch_body(len(body["requests"])))
+
+        provider = _provider(handler, batch_size=2, items_per_minute=6000, burst_items=1000)
+        texts = [f"chunk number {i}" for i in range(5)]
+        batch = await provider.embed(texts, task_type="RETRIEVAL_DOCUMENT")
+
+        assert [len(f["requests"]) for f in files] == [2, 2, 1]
+        assert [e.text for e in batch.embeddings] == texts

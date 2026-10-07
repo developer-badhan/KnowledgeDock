@@ -151,6 +151,9 @@ class _FakeCollection:
     async def update_one(self, *args: Any, **kwargs: Any) -> Any:
         return _FakeResult()
 
+    async def replace_one(self, *args: Any, **kwargs: Any) -> Any:
+        return _FakeResult()
+
     async def list_search_indexes(self) -> Any:
         return _FakeCursor([])
 

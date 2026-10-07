@@ -21,9 +21,12 @@ Two Gemini specifics that are easy to get wrong:
   explicitly means the stored value matches what a caller computing cosine
   similarity locally would compute.
 
-Only one embedding is requested per HTTP call. Gemini's REST surface has no batch
-endpoint, and the free tier is rate limited, so batching is done by issuing
-sequential requests under one logical batch.
+Texts are embedded through `batchEmbedContents`, which accepts up to 100 items
+per HTTP call. Batching is why a small file is a single round trip instead of
+one request per chunk — the dominant cost before was not the embedding, it was
+the pacing sleep between requests. `batchEmbedContents` counts every item against
+quota, so the pacer sits *inside* the batch loop and spends one token per item,
+never one per HTTP call.
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ import math
 import random
 import time
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 
@@ -47,7 +50,7 @@ from knowledgedock.infrastructure.security.errors import (
 logger = logging.getLogger(__name__)
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-EMBED_PATH = "/models/{model}:embedContent"
+BATCH_EMBED_PATH = "/models/{model}:batchEmbedContents"
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,29 +91,37 @@ def l2_normalize(vector: list[float]) -> list[float]:
 
 
 class _Pacer:
-    """Spaces outbound calls to a fixed rate, with a small burst allowance.
+    """Spaces outbound embedding work to a fixed rate, with a burst allowance.
 
-    Gemini's free tier answers a burst of embedding requests with 429, and
-    retry backoff cannot rescue that: backing off a rate that is structurally
-    above quota just fails later. The request rate has to be lowered instead.
+    Gemini's free tier answers a burst of embedding requests with 429, and retry
+    backoff cannot rescue that: backing off a rate that is structurally above
+    quota just fails later. The rate has to be lowered instead.
 
-    A token bucket rather than a sleep between every call, because a query
-    embedding should not wait behind a document with hundreds of chunks. The
-    bucket starts full, so the first few calls go out immediately, and a caller
-    arriving mid-ingestion still gets a slot.
+    The token is an ITEM (one chunk or one query), not an HTTP call. Quota is
+    consumed per embedded text even on `batchEmbedContents`, so charging per call
+    would let batching spend quota ~batch_size times faster than configured.
+
+    A token bucket rather than a clock: the bucket starts full, so a document
+    whose chunks fit in the burst is embedded immediately — which is every small
+    file — while a large one is paced. The same bucket serves query embedding, so
+    an interactive question arriving mid-ingestion gets a slot rather than a
+    queue behind hundreds of untouched chunks.
 
     The lock is held only while deciding, never while sleeping, so one paced
     waiter cannot block the others from making progress.
     """
 
-    def __init__(self, requests_per_minute: int, burst: int) -> None:
-        self._interval = 60.0 / requests_per_minute
-        self._burst = max(1, burst)
+    def __init__(self, items_per_minute: int, burst_items: int) -> None:
+        self._interval = 60.0 / items_per_minute
+        self._burst = max(1, burst_items)
         self._tokens = float(self._burst)
         self._updated = time.monotonic()
         self._lock = asyncio.Lock()
 
-    async def acquire(self) -> None:
+    async def acquire(self, count: int = 1) -> None:
+        """Spend `count` item tokens, waiting as long as the rate demands."""
+        if count < 1:
+            return
         while True:
             async with self._lock:
                 now = time.monotonic()
@@ -118,10 +129,10 @@ class _Pacer:
                     self._burst, self._tokens + (now - self._updated) / self._interval
                 )
                 self._updated = now
-                if self._tokens >= 1.0:
-                    self._tokens -= 1.0
+                if self._tokens >= count:
+                    self._tokens -= count
                     return
-                wait = (1.0 - self._tokens) * self._interval
+                wait = (count - self._tokens) * self._interval
             await asyncio.sleep(wait)
 
 
@@ -135,19 +146,25 @@ class GeminiEmbeddingProvider:
         timeout_seconds: float,
         max_retries: int,
         backoff_seconds: float,
-        requests_per_minute: int = 5,
-        burst: int = 5,
+        batch_size: int = 50,
+        items_per_minute: int = 120,
+        burst_items: int = 240,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        if requests_per_minute < 1:
-            raise ValueError("requests_per_minute must be at least 1")
+        if not 1 <= batch_size <= 100:
+            raise ValueError("batch_size must be 1-100")
+        if items_per_minute < 1:
+            raise ValueError("items_per_minute must be at least 1")
+        if burst_items < batch_size:
+            raise ValueError("burst_items must be at least batch_size")
         self._api_key = api_key
         self._model = model
         self._dimensions = dimensions
+        self._batch_size = batch_size
         self._timeout = httpx.Timeout(timeout_seconds)
         self._max_retries = max_retries
         self._backoff = backoff_seconds
-        self._limiter = _Pacer(requests_per_minute, burst)
+        self._limiter = _Pacer(items_per_minute, burst_items)
         self._client = client
         self._owns_client = client is None
 
@@ -170,18 +187,20 @@ class GeminiEmbeddingProvider:
         client = self._client or httpx.AsyncClient(timeout=self._timeout)
         try:
             results = []
-            for text in texts:
-                # Paced before every call, including the first, so ingestion and
-                # query embedding share one budget against the same API key.
-                await self._limiter.acquire()
-                vector = await self._embed_one(client, text, task_type)
-                results.append(
-                    EmbeddedText(
-                        text=text,
-                        # Gemini only pre-normalises its full 3072-dim output.
-                        vector=(vector if len(vector) == 3072 else l2_normalize(vector)),
+            for start in range(0, len(texts), self._batch_size):
+                batch_texts = texts[start : start + self._batch_size]
+                # Paced by item, so batching cannot spend quota faster than the
+                # configured rate, and ingestion and query share one budget.
+                await self._limiter.acquire(len(batch_texts))
+                vectors = await self._embed_batch(client, batch_texts, task_type)
+                for text, vector in zip(batch_texts, vectors, strict=True):
+                    results.append(
+                        EmbeddedText(
+                            text=text,
+                            # Gemini only pre-normalises its full 3072-dim output.
+                            vector=(vector if len(vector) == 3072 else l2_normalize(vector)),
+                        )
                     )
-                )
         finally:
             if self._owns_client:
                 await client.aclose()
@@ -193,13 +212,26 @@ class GeminiEmbeddingProvider:
             model=self._model,
         )
 
-    async def _embed_one(self, client: httpx.AsyncClient, text: str, task_type: str) -> list[float]:
-        url = f"{GEMINI_BASE_URL}{EMBED_PATH.format(model=self._model)}"
+    async def _embed_batch(
+        self, client: httpx.AsyncClient, texts: list[str], task_type: str
+    ) -> list[list[float]]:
+        """Embed `texts` in one `batchEmbedContents` call, with bounded retries.
+
+        The endpoint answers all items in a batch or errors as a batch, so a
+        short list is treated as a provider failure rather than silently
+        dropping chunks.
+        """
+        url = f"{GEMINI_BASE_URL}{BATCH_EMBED_PATH.format(model=self._model)}"
         payload = {
-            "model": f"models/{self._model}",
-            "content": {"parts": [{"text": text}]},
-            "taskType": task_type,
-            "outputDimensionality": self._dimensions,
+            "requests": [
+                {
+                    "model": f"models/{self._model}",
+                    "content": {"parts": [{"text": text}]},
+                    "taskType": task_type,
+                    "outputDimensionality": self._dimensions,
+                }
+                for text in texts
+            ]
         }
         headers = {"x-goog-api-key": self._api_key, "Content-Type": "application/json"}
 
@@ -220,7 +252,7 @@ class GeminiEmbeddingProvider:
                 )
             else:
                 if response.status_code == 200:
-                    return self._read_vector(response)
+                    return self._read_batch(response, len(texts))
                 # 429 and 5xx are worth another attempt; 4xx will not become valid.
                 if response.status_code == 429 or response.status_code >= 500:
                     last_error = ProviderUnavailable(
@@ -250,22 +282,36 @@ class GeminiEmbeddingProvider:
         ceiling = min(self._backoff * (2**attempt), 30.0)
         return random.uniform(0, ceiling)
 
-    def _read_vector(self, response: httpx.Response) -> list[float]:
+    def _read_batch(self, response: httpx.Response, expected: int) -> list[list[float]]:
         try:
-            vector = response.json()["embedding"]["values"]
+            embeddings = response.json()["embeddings"]
         except (ValueError, KeyError, TypeError) as exc:
             raise ProviderUnavailable(
                 "Embedding provider returned an unexpected response shape.",
                 detail=response.text[:200],
             ) from exc
-        if not isinstance(vector, list) or not vector:
+        if not isinstance(embeddings, list) or len(embeddings) != expected:
+            raise ProviderUnavailable(
+                "Embedding provider returned the wrong number of vectors.",
+                detail=response.text[:200],
+            )
+        return [self._read_values(entry) for entry in embeddings]
+
+    def _read_values(self, entry: Any) -> list[float]:
+        try:
+            values = entry["values"]
+        except (KeyError, TypeError) as exc:
+            raise ProviderUnavailable(
+                "Embedding provider returned an unexpected response shape."
+            ) from exc
+        if not isinstance(values, list) or not values:
             raise ProviderUnavailable("Embedding provider returned an empty vector.")
-        if len(vector) != self._dimensions:
+        if len(values) != self._dimensions:
             raise ProviderUnavailable(
                 "Embedding dimension mismatch.",
-                detail=f"expected {self._dimensions}, got {len(vector)}",
+                detail=f"expected {self._dimensions}, got {len(values)}",
             )
-        return [float(value) for value in vector]
+        return [float(value) for value in values]
 
 
 class NullEmbeddingProvider:

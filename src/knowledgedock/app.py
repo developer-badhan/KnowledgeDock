@@ -91,6 +91,10 @@ from knowledgedock.infrastructure.repositories.document_repository import (
     MongoDocumentRepository,
     UnavailableDocumentRepository,
 )
+from knowledgedock.infrastructure.repositories.document_text_repository import (
+    MongoDocumentTextRepository,
+    UnavailableDocumentTextRepository,
+)
 from knowledgedock.infrastructure.repositories.usage_repository import (
     MongoAIUsageRepository,
     UnavailableAIUsageRepository,
@@ -119,6 +123,7 @@ def create_app(
     user_repository=None,
     workspace_repository=None,
     document_repository=None,
+    document_text_repository=None,
     chunk_repository=None,
     conversation_repository=None,
     usage_repository=None,
@@ -203,6 +208,21 @@ def create_app(
                 )
                 documents_repo = UnavailableDocumentRepository(exc)
 
+        if document_text_repository is not None:
+            texts_repo = document_text_repository
+        elif isinstance(repository, UnavailableUserRepository):
+            texts_repo = UnavailableDocumentTextRepository(repository.cause)
+        else:
+            try:
+                texts_repo = MongoDocumentTextRepository(mongo.database())
+            except Exception as exc:  # pragma: no cover - mirrors the other paths
+                logger.error(
+                    "documents.text_repository_unavailable",
+                    extra={"error": "could not reach the database at startup"},
+                    exc_info=True,
+                )
+                texts_repo = UnavailableDocumentTextRepository(exc)
+
         if usage_repository is not None:
             usage_repo = usage_repository
         elif isinstance(repository, UnavailableUserRepository):
@@ -242,12 +262,13 @@ def create_app(
         app.state.upload_document = UploadDocument(
             documents_repo,
             file_storage,
+            texts_repo,
             allowed_content_types=settings.allowed_content_types,
             max_bytes=settings.max_upload_size_mb * 1024 * 1024,
         )
         app.state.list_documents = ListDocuments(documents_repo)
         app.state.get_document = GetDocument(documents_repo)
-        app.state.delete_document = DeleteDocument(documents_repo, file_storage)
+        app.state.delete_document = DeleteDocument(documents_repo, file_storage, texts_repo)
 
         app.state.register_user = RegisterUser(
             repository,
@@ -319,6 +340,7 @@ def create_app(
             documents=documents_repo,
             chunks=chunks_repo,
             storage=file_storage,
+            texts=texts_repo,
             embeddings=embedding_provider,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
@@ -331,7 +353,6 @@ def create_app(
             process=process,
             poll_interval_seconds=settings.processing_poll_interval_seconds,
             max_attempts=settings.processing_max_attempts,
-            stale_after_minutes=settings.processing_stale_after_minutes,
         )
         app.state.ingestion_worker = worker
         app.state.chunk_repository = chunks_repo
@@ -368,6 +389,7 @@ def create_app(
             repository,
             workspaces_repo,
             documents_repo,
+            texts_repo,
             chunks_repo,
             conversations_repo,
             usage_repo,
@@ -510,6 +532,7 @@ async def _ensure_indexes(
     repository,
     workspace_repository=None,
     document_repository=None,
+    document_text_repository=None,
     chunk_repository=None,
     conversation_repository=None,
     usage_repository=None,
@@ -526,6 +549,8 @@ async def _ensure_indexes(
             await workspace_repository.ensure_indexes()
         if document_repository is not None:
             await document_repository.ensure_indexes()
+        if document_text_repository is not None:
+            await document_text_repository.ensure_indexes()
         if chunk_repository is not None:
             await chunk_repository.ensure_indexes()
         if usage_repository is not None:
@@ -717,6 +742,7 @@ def _build_embedding_provider(settings: Settings):
         timeout_seconds=settings.ai_timeout_seconds,
         max_retries=settings.ai_max_retries,
         backoff_seconds=settings.ai_retry_backoff_seconds,
-        requests_per_minute=settings.ai_embedding_requests_per_minute,
-        burst=settings.ai_embedding_burst,
+        batch_size=settings.ai_embedding_batch_size,
+        items_per_minute=settings.ai_embedding_items_per_minute,
+        burst_items=settings.ai_embedding_burst_items,
     )

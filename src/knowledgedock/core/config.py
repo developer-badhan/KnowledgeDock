@@ -83,8 +83,9 @@ class Settings:
     llm_max_question_characters: int
     ai_rate_limit_per_minute: int
     ai_retry_backoff_seconds: float
-    ai_embedding_requests_per_minute: int
-    ai_embedding_burst: int
+    ai_embedding_batch_size: int
+    ai_embedding_items_per_minute: int
+    ai_embedding_burst_items: int
 
     # -- Uploads -----------------------------------------------------------
     storage_dir: Path
@@ -111,7 +112,6 @@ class Settings:
 
     # -- Background processing ---------------------------------------------
     processing_max_attempts: int
-    processing_stale_after_minutes: int
     processing_poll_interval_seconds: int
     processing_enabled: bool
 
@@ -146,10 +146,18 @@ class Settings:
             )
         # Zero would make the pacing interval infinite and stall every ingestion
         # forever, which reads as a hang rather than a misconfiguration.
-        if self.ai_embedding_requests_per_minute < 1:
-            raise ValueError("AI_EMBEDDING_REQUESTS_PER_MINUTE must be at least 1")
-        if self.ai_embedding_burst < 1:
-            raise ValueError("AI_EMBEDDING_BURST must be at least 1")
+        if self.ai_embedding_items_per_minute < 1:
+            raise ValueError("AI_EMBEDDING_ITEMS_PER_MINUTE must be at least 1")
+        if self.ai_embedding_burst_items < 1:
+            raise ValueError("AI_EMBEDDING_BURST_ITEMS must be at least 1")
+        # batchEmbedContents refuses more than 100, and accepting a larger value
+        # in config would turn the "set a batch size" knob into a 400 generator.
+        if not 1 <= self.ai_embedding_batch_size <= 100:
+            raise ValueError("AI_EMBEDDING_BATCH_SIZE must be 1-100")
+        # A burst smaller than one batch would make every batch wait, even the
+        # first, defeating the burst's purpose of keeping small files instant.
+        if self.ai_embedding_burst_items < self.ai_embedding_batch_size:
+            raise ValueError("AI_EMBEDDING_BURST_ITEMS must be at least AI_EMBEDDING_BATCH_SIZE")
         # Raw cosine, so the range is -1.0..1.0 and negative is meaningful:
         # opposing text genuinely scores below zero. Clamping the bound to 0.0
         # would silently accept a threshold that rejects everything.
@@ -271,17 +279,23 @@ def load_settings(source: Any | None = None) -> Settings:
         ai_rate_limit_per_minute=optional("AI_RATE_LIMIT_PER_MINUTE", 20, int),
         # Base for exponential backoff with full jitter on provider retries.
         ai_retry_backoff_seconds=optional("AI_RETRY_BACKOFF_SECONDS", 1.0, float),
-        # Pacing for outbound embedding calls. Gemini's free tier allows only a
-        # handful of embedding requests a minute, and retry backoff cannot fix a
-        # call rate that structurally exceeds quota -- it only smooths spikes.
-        # Five a minute is the free-tier ceiling for gemini-embedding-001, so a
-        # large document takes real time instead of failing. Raise this if the
-        # key is on a paid tier.
-        ai_embedding_requests_per_minute=optional("AI_EMBEDDING_REQUESTS_PER_MINUTE", 5, int),
-        # Bucket capacity. It lets an interactive query embed immediately instead
-        # of queueing behind a document that is mid-ingestion, while still
-        # bounding the sustained rate. Keep at least 1.
-        ai_embedding_burst=optional("AI_EMBEDDING_BURST", 5, int),
+        # How many texts one embedding HTTP call carries. Gemini's
+        # `batchEmbedContents` accepts at most 100, and batching is what keeps a
+        # small file to a single round trip instead of one per chunk. It reduces
+        # latency and rate-limit pressure rather than quota use: the pacer below
+        # still counts every item.
+        ai_embedding_batch_size=optional("AI_EMBEDDING_BATCH_SIZE", 50, int),
+        # Sustained rate of embedding ITEMS, per minute, across ingestion and
+        # query embedding (one provider shares one budget against one API key).
+        # Retry backoff cannot fix a rate that sits above quota, so the rate is
+        # bounded here instead. An item is one chunk or one query; a 12 KB
+        # markdown file is roughly ten, a 5.8 MB PDF several hundred.
+        ai_embedding_items_per_minute=optional("AI_EMBEDDING_ITEMS_PER_MINUTE", 120, int),
+        # Bucket capacity, in items. The bucket starts full, so a document whose
+        # chunks fit in one burst is embedded immediately -- which is every small
+        # file -- while a large one is paced. A query embeds at once even while a
+        # document is mid-ingestion. Keep at least the batch size.
+        ai_embedding_burst_items=optional("AI_EMBEDDING_BURST_ITEMS", 240, int),
         storage_dir=optional("STORAGE_DIR", "/tmp/knowledgedock/uploads"),
         max_upload_size_mb=optional("MAX_UPLOAD_SIZE_MB", 10, int),
         allowed_content_types=tuple(content_types or ()),
@@ -302,7 +316,6 @@ def load_settings(source: Any | None = None) -> Settings:
         # limiter's job here is to bound server work rather than to count guesses.
         auth_rate_limit_per_minute=optional("AUTH_RATE_LIMIT_PER_MINUTE", 10, int),
         processing_max_attempts=optional("PROCESSING_MAX_ATTEMPTS", 3, int),
-        processing_stale_after_minutes=optional("PROCESSING_STALE_AFTER_MINUTES", 30, int),
         # How often the worker looks for PENDING documents. Render free tier has no
         # always-on instance, so this is the latency between an upload and its
         # first processing attempt.

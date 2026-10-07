@@ -61,28 +61,26 @@ class IngestionWorker:
         process: ProcessDocument,
         poll_interval_seconds: float,
         max_attempts: int,
-        stale_after_minutes: int,
     ) -> None:
         self._documents = documents
         self._process = process
         self._interval = poll_interval_seconds
         self._max_attempts = max_attempts
-        self._stale_after_minutes = stale_after_minutes
 
     async def reclaim_abandoned(self) -> int:
         """Return interrupted and retryable documents to PENDING at startup.
 
-        The returned count is logged because a non-zero value right after a
-        deploy is the normal signal that an instance was killed mid-job.
+        On a single worker, every PROCESSING row observed at startup is
+        abandoned: the only process that could have claimed it is this one, and
+        it has just started. There is no staleness cut-off to apply — a document
+        that was being processed when the previous instance died is abandoned no
+        matter how recently it moved to PROCESSING. The returned count is logged
+        because a non-zero value right after a deploy is the normal signal that
+        an instance was killed mid-job.
         """
-        from datetime import timedelta
-
-        from knowledgedock.domain.users import utcnow
-
-        cutoff = utcnow() - timedelta(minutes=self._stale_after_minutes)
         requeued = 0
         try:
-            for document in await self._documents.find_stale_processing(cutoff):
+            for document in await self._documents.find_interrupted():
                 await self._documents.replace_for_reupload(document.requeue_from_interrupted())
                 requeued += 1
 

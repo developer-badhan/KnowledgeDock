@@ -21,7 +21,6 @@ existence.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -58,7 +57,7 @@ class DocumentRepository(Protocol):
 
     async def claim_next_pending(self) -> Document | None: ...
 
-    async def find_stale_processing(self, cutoff: datetime) -> list[Document]: ...
+    async def find_interrupted(self) -> list[Document]: ...
 
     async def find_retryable_failures(self, max_attempts: int) -> list[Document]: ...
 
@@ -173,15 +172,19 @@ class MongoDocumentRepository:
         )
         return Document.from_document(document) if document else None
 
-    async def find_stale_processing(self, cutoff: datetime) -> list[Document]:
-        """Documents stuck in PROCESSING since before `cutoff`.
+    async def find_interrupted(self) -> list[Document]:
+        """Documents stuck in PROCESSING.
 
-        These were interrupted by a restart. `attempts` is left intact so the
-        retry budget still applies.
+        On a single worker, any PROCESSING row when the process starts was
+        interrupted mid-job: the only writer is this process, and it is not
+        running yet. `find_one_and_update` claiming means a freshly claimed row is
+        already PROCESSING, but only this worker could have claimed it, so every
+        row it sees at startup belongs to a previous, dead run. `attempts` is
+        left intact so the retry budget still applies.
         """
-        found = await self._documents.find(
-            {"status": str(DocumentStatus.PROCESSING), "updated_at": {"$lt": cutoff}}
-        ).to_list(length=None)
+        found = await self._documents.find({"status": str(DocumentStatus.PROCESSING)}).to_list(
+            length=None
+        )
         return [Document.from_document(d) for d in found]
 
     async def find_retryable_failures(self, max_attempts: int) -> list[Document]:
@@ -270,12 +273,8 @@ class InMemoryDocumentRepository:
         self.documents[chosen.id] = claimed
         return claimed
 
-    async def find_stale_processing(self, cutoff: datetime) -> list[Document]:
-        return [
-            d
-            for d in self.documents.values()
-            if d.status is DocumentStatus.PROCESSING and d.updated_at < cutoff
-        ]
+    async def find_interrupted(self) -> list[Document]:
+        return [d for d in self.documents.values() if d.status is DocumentStatus.PROCESSING]
 
     async def find_retryable_failures(self, max_attempts: int) -> list[Document]:
         return [
@@ -330,7 +329,7 @@ class UnavailableDocumentRepository:
     async def claim_next_pending(self) -> Document | None:
         raise self._error()
 
-    async def find_stale_processing(self, cutoff: datetime) -> list[Document]:
+    async def find_interrupted(self) -> list[Document]:
         raise self._error()
 
     async def find_retryable_failures(self, max_attempts: int) -> list[Document]:

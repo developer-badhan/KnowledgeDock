@@ -361,16 +361,18 @@ than starting in a broken state.
 
 Free web services **spin down after 15 minutes without traffic**. The next
 request takes roughly one minute while Render shows a loading page. Nothing is
-broken; this is expected. `PROCESSING_STALE_AFTER_MINUTES` exists because a
-document caught mid-processing when the instance sleeps will never finish — the
-app requeues it on the next startup.
+broken; this is expected. A document caught mid-processing when the instance
+sleeps is requeued on the next startup, because the worker treats every
+`PROCESSING` row it finds at startup as abandoned — on a single worker, nothing
+else could have claimed it.
 
 ## F2. Ephemeral filesystem
 
 Uploads under `/tmp/knowledgedock/uploads` are wiped on every redeploy, restart
-and spin-down. This is acceptable: the extracted text, chunks and vectors live
-in Atlas, and the raw file is only needed while processing runs. Free Render
-services cannot have a persistent disk.
+and spin-down. This is acceptable: the text is extracted once at upload time and
+the extracted text, chunks and vectors live in Atlas, so the worker re-embeds
+from the stored text even when the disk is gone. The raw file is only a staging
+artefact. Free Render services cannot have a persistent disk.
 
 ## F3. Monthly limits
 
