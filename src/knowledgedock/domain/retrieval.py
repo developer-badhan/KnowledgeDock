@@ -21,6 +21,15 @@ Those are raw cosine values, where 0.0 means orthogonal and 1.0 means identical,
 so the separator between a near miss and a real match sits around 0.65. That is
 where `RETRIEVAL_MIN_SCORE` now defaults, and why it moved off 0.35.
 
+A hard cutoff at that line has a cost: a genuinely borderline match — a question
+phrased differently from the document's wording — lands just below 0.65 and is
+rejected by a number without ever being read. So the cutoff is not a single line.
+`retrieval_weak_min_score` (default 0.5, the 'different topic' line) is a second,
+lower floor. Matches between the two floors become *weak evidence*: they still
+reach the model, which is told the passage may not answer the question and that
+declining is the correct response when it does not. Only a match below the weak
+floor is refused without being read.
+
 Similarity is deliberately *not* clamped to [0, 1]. Genuinely opposite text
 produces a negative cosine, and letting that reach the threshold is what makes
 the cutoff meaningful. A clamp would map "-0.4" and "+0.1" to the same value.
@@ -41,10 +50,17 @@ class NoAnswerReason(StrEnum):
     index and comes back empty, reported as `NO_MATCHES`. The distinction matters
     to whoever tunes the system: `NO_MATCHES` points at ingestion, `BELOW_THRESHOLD`
     points at the threshold.
+
+    `WEAK_EVIDENCE` is the deliberately different case: there is no confident
+    context, but candidates between the confident bar and the weak floor were
+    handed to the model as evidence it is allowed to reject. It reports on the
+    search page as an answer-for-real, not a no-answer, because the generation
+    already happened.
     """
 
     NO_MATCHES = "no_matches"
     BELOW_THRESHOLD = "below_threshold"
+    WEAK_EVIDENCE = "weak_evidence"
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,11 +136,17 @@ class SearchOutcome:
 
     query: str
     chunks: tuple[RetrievedChunk, ...] = ()
+    #: Chunks between the weak floor and the confident bar, handed to the caller
+    #: when nothing passed. `no_answer` is False while these exist: the evidence
+    #: is weak, but it is evidence, and a model is allowed to reject it. Callers
+    #: that cannot generate (e.g. a read-only search page) can still report them.
+    weak_chunks: tuple[RetrievedChunk, ...] = ()
     context: BuiltContext = field(default_factory=BuiltContext)
     no_answer: bool = False
     reason: NoAnswerReason | None = None
     top_score: float | None = None
     threshold: float = 0.0
+    weak_min_score: float = 0.0
     limit: int = 0
     candidates_returned: int = 0
     below_threshold: int = 0
@@ -136,10 +158,12 @@ class SearchOutcome:
         return {
             "query": self.query,
             "hits": [chunk.to_dict() for chunk in self.chunks],
+            "weak_hits": [chunk.to_dict() for chunk in self.weak_chunks],
             "no_answer": self.no_answer,
             "reason": self.reason.value if self.reason else None,
             "top_score": round(self.top_score, 6) if self.top_score is not None else None,
             "threshold": self.threshold,
+            "weak_threshold": self.weak_min_score,
             "limit": self.limit,
             "candidates_returned": self.candidates_returned,
             "below_threshold": self.below_threshold,

@@ -143,6 +143,10 @@ class Answer:
     no_answer: bool
     conversation_id: UUID | None
     citations: tuple[Citation, ...] = ()
+    #: True when the answer was generated from weak evidence (a match below the
+    #: confident threshold that the model was allowed to reject). Carried to the
+    #: UI so a user knows the retrieval was borderline and can judge the source.
+    weak: bool = False
     #: Retrieval diagnostics, carried through so a caller can see *why* an answer
     #: was thin without a second search. Same fields Phase 06 exposes.
     top_score: float | None = None
@@ -158,12 +162,14 @@ class Answer:
             "question": self.question,
             "answer": self.answer,
             "no_answer": self.no_answer,
+            "weak": self.weak,
             "conversation_id": str(self.conversation_id) if self.conversation_id else None,
             "sources": [c.to_dict() for c in self.citations],
             "retrieval": {
                 "top_score": round(self.top_score, 6) if self.top_score is not None else None,
                 "threshold": self.threshold,
                 "context_characters": self.context_characters,
+                "weak": self.weak,
             },
             "model": self.model,
             "provider": self.provider,

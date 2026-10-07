@@ -98,6 +98,17 @@ class BuildContext:
 class SemanticSearch:
     """Query embedding -> vector search -> threshold -> context.
 
+    Two cutoffs, deliberately. `min_score` is the confident bar: chunks at or
+    above it become the grounded context and the question is answered. Chunks in
+    `[weak_min_score, min_score)` are *weak evidence* — below the bar, but still
+    worth a model's judgment rather than a number's. They are returned in
+    `weak_chunks` with `no_answer` left False so a caller can choose whether to
+    generate. Only chunks below the weak floor are dropped without a hearing;
+    that is what `below_threshold` counts.
+
+    `weak_min_score` defaults to `min_score`, which leaves the weak band empty
+    and restores the old single-cutoff behaviour for callers that do not opt in.
+
     `num_candidates` is Atlas's approximation budget and is deliberately larger
     than `limit`: it controls how many neighbours the index examines before
     ranking. Too small and a workspace's real matches can be crowded out by other
@@ -114,6 +125,7 @@ class SemanticSearch:
         max_embed_tokens: int,
         top_k: int,
         min_score: float,
+        weak_min_score: float | None = None,
         context_max_characters: int,
     ) -> None:
         self._chunks = chunks
@@ -123,12 +135,17 @@ class SemanticSearch:
         self._max_embed_tokens = max_embed_tokens
         self._top_k = top_k
         self._min_score = min_score
+        self._weak_min_score = min_score if weak_min_score is None else weak_min_score
         self._context_budget = context_max_characters
         self._context = BuildContext(max_characters=context_max_characters)
 
     @property
     def min_score(self) -> float:
         return self._min_score
+
+    @property
+    def weak_min_score(self) -> float:
+        return self._weak_min_score
 
     async def execute(
         self, workspace_id: UUID, query: str, *, limit: int | None = None
@@ -141,6 +158,7 @@ class SemanticSearch:
                 no_answer=True,
                 reason=NoAnswerReason.NO_MATCHES,
                 threshold=self._min_score,
+                weak_min_score=self._weak_min_score,
                 limit=limit,
                 embedding_model=self._embeddings.model,
                 embedding_provider=self._embeddings.provider_name,
@@ -179,30 +197,37 @@ class SemanticSearch:
         scored.sort(key=lambda item: item.score, reverse=True)
         kept = scored[:limit]
         passing = [chunk for chunk in kept if chunk.score >= self._min_score]
+        weak = [chunk for chunk in kept if self._weak_min_score <= chunk.score < self._min_score]
 
         if not rows:
             reason = NoAnswerReason.NO_MATCHES
-        elif not passing:
-            reason = NoAnswerReason.BELOW_THRESHOLD
-        else:
+        elif passing:
             reason = None
+        elif weak:
+            # Sub-threshold but still worth a model's judgement: reported as weak
+            # evidence, not a no-answer, because the caller may still generate.
+            reason = NoAnswerReason.WEAK_EVIDENCE
+        else:
+            reason = NoAnswerReason.BELOW_THRESHOLD
 
         context = self._context.build(passing)
-        if reason is not None:
-            # Nothing usable, so the budget is not the limiting factor.
+        if not passing:
+            # Nothing confident, so the budget is not the limiting factor.
             context = BuiltContext(budget=self._context_budget)
 
         return SearchOutcome(
             query=query,
             chunks=tuple(passing),
+            weak_chunks=tuple(weak),
             context=context,
-            no_answer=reason is not None,
+            no_answer=reason in (NoAnswerReason.NO_MATCHES, NoAnswerReason.BELOW_THRESHOLD),
             reason=reason,
             top_score=kept[0].score if kept else None,
             threshold=self._min_score,
+            weak_min_score=self._weak_min_score,
             limit=limit,
             candidates_returned=len(rows),
-            below_threshold=len(kept) - len(passing),
+            below_threshold=len(kept) - len(passing) - len(weak),
             embedding_model=self._embeddings.model,
             embedding_provider=self._embeddings.provider_name,
             embedding_dimensions=self._embeddings.dimensions,

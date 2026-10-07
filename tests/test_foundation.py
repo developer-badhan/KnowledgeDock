@@ -133,6 +133,7 @@ class TestSettingsLoading:
         assert settings.chunk_overlap == 200
         assert settings.retrieval_top_k == 5
         assert settings.retrieval_min_score == pytest.approx(0.65)
+        assert settings.retrieval_weak_min_score == pytest.approx(0.5)
         assert settings.context_max_chars == 6000
         assert settings.gemini_embedding_dimensions == 768
         assert settings.gemini_chat_model == "gemini-3.8-flash"
@@ -258,6 +259,23 @@ class TestSettingsValidation:
     def test_similarity_score_outside_zero_to_one_is_rejected(self, load_from) -> None:
         with pytest.raises(ValueError, match="RETRIEVAL_MIN_SCORE"):
             load_from("RETRIEVAL_MIN_SCORE=1.4\n")
+
+    def test_weak_floor_is_parsed_from_the_env(self, load_from) -> None:
+        loaded = load_from("RETRIEVAL_WEAK_MIN_SCORE=0.52\n")
+        assert loaded.retrieval_weak_min_score == pytest.approx(0.52)
+
+    def test_weak_floor_cannot_exceed_the_confident_bar(self, load_from) -> None:
+        # A weak band above the confident bar is an empty band that silently
+        # disables the weak path; refuse it rather than let it look configured.
+        with pytest.raises(ValueError, match="RETRIEVAL_WEAK_MIN_SCORE"):
+            load_from("RETRIEVAL_MIN_SCORE=0.5\nRETRIEVAL_WEAK_MIN_SCORE=0.7\n")
+
+    def test_weak_floor_bounds_are_policed(self, load_from) -> None:
+        # It participates in the same raw-cosine scale as the confident bar.
+        with pytest.raises(ValueError, match="RETRIEVAL_WEAK_MIN_SCORE"):
+            load_from("RETRIEVAL_WEAK_MIN_SCORE=1.5\n")
+        with pytest.raises(ValueError, match="RETRIEVAL_WEAK_MIN_SCORE"):
+            load_from("RETRIEVAL_WEAK_MIN_SCORE=-2.0\n")
 
     def test_empty_content_type_allowlist_is_rejected(self, load_from) -> None:
         with pytest.raises(ValueError, match="ALLOWED_CONTENT_TYPES"):

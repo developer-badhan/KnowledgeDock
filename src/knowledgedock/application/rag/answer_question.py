@@ -13,6 +13,7 @@ is still in the history, so the retry is a follow-up rather than a hole.
 from __future__ import annotations
 
 import logging
+import re
 from uuid import UUID
 
 from knowledgedock.application.rag.prompt import build_grounded_prompt, build_retrieval_query
@@ -24,9 +25,27 @@ from knowledgedock.domain.conversation import (
     new_message,
 )
 from knowledgedock.domain.errors import NotFound
+from knowledgedock.domain.retrieval import ContextBlock
 from knowledgedock.infrastructure.ai.llm import LLMProvider
 
 logger = logging.getLogger(__name__)
+
+
+def _is_decline(text: str) -> bool:
+    """Whether the model chose the verbatim decline instead of answering.
+
+    The weak prompt offers an exact sentence: ``"I could not find anything in
+    this workspace that answers that question."`` A compliant model returns it
+    verbatim, so an exact comparison after collapsing whitespace and stripping
+    any quotes is enough. A model that paraphrases instead is treated as having
+    answered, which is the correct default: anything other than a clear decline
+    is a commitment, and this check must never misclassify a short real answer.
+    """
+
+    def normalise(value: str) -> str:
+        return re.sub(r"\s+", " ", value.strip().strip("\"'“”`")).lower()
+
+    return normalise(text) == normalise(NO_ANSWER_TEXT)
 
 
 class AskQuestion:
@@ -92,9 +111,9 @@ class AskQuestion:
         retrieval_query = build_retrieval_query(question, history)
         outcome = await self._search.execute(workspace_id, retrieval_query, limit=self._top_k)
 
-        if outcome.no_answer or outcome.context.is_empty:
-            # No model call. Cheapest honest path, and it cannot be talked into
-            # answering from outside knowledge.
+        if outcome.context.is_empty and not outcome.weak_chunks:
+            # No evidence at all, not even weak. No model call. Cheapest honest
+            # path, and it cannot be talked into answering from outside knowledge.
             answer = Answer(
                 question=question,
                 answer=NO_ANSWER_TEXT,
@@ -117,6 +136,18 @@ class AskQuestion:
             )
             return answer
 
+        # Confident context, or weak evidence the model is allowed to reject.
+        # Both reach the model; the difference is only in how permissive the
+        # prompt is (low_confidence) and how a decline is recorded.
+        weak = outcome.context.is_empty
+        blocks = (
+            outcome.context.blocks
+            if not weak
+            else tuple(
+                ContextBlock(chunk=chunk, position=index + 1)
+                for index, chunk in enumerate(outcome.weak_chunks)
+            )
+        )
         citations = tuple(
             Citation(
                 document_id=block.chunk.document_id,
@@ -124,9 +155,9 @@ class AskQuestion:
                 chunk_index=block.chunk.chunk_index,
                 score=block.chunk.score,
             )
-            for block in outcome.context.blocks
+            for block in blocks
         )
-        prompt = build_grounded_prompt(question, outcome.context.blocks, history=history)
+        prompt = build_grounded_prompt(question, blocks, history=history, low_confidence=weak)
         try:
             generated = await self._llm.generate_answer(prompt)
         except Exception:
@@ -135,21 +166,28 @@ class AskQuestion:
             logger.exception("rag.generation_failed", extra={"workspace_id": str(workspace_id)})
             raise
 
+        # A weak decline is a no-answer: the evidence did not support the
+        # question, so the turn is recorded as such. Citations are dropped on a
+        # decline because nothing was actually used.
+        declined = weak and _is_decline(generated.text)
+        message_citations = () if declined else citations
         await self._conversations.append(
             new_message(
                 conversation.id,
                 workspace_id,
                 MessageRole.ASSISTANT,
                 generated.text,
-                citations=citations,
+                citations=message_citations,
+                no_answer=declined,
             )
         )
         return Answer(
             question=question,
             answer=generated.text,
-            no_answer=False,
+            no_answer=declined,
             conversation_id=conversation.id,
-            citations=citations,
+            citations=message_citations,
+            weak=weak,
             top_score=outcome.top_score,
             threshold=self._min_score,
             context_characters=outcome.context.character_count,

@@ -12,6 +12,12 @@ distinguishes an empty index from a threshold set too high — the first is an
 ingestion bug, the second is a tuning decision, and they look identical without
 this.
 
+Two cutoffs are reported: `threshold` is the confident bar and `weak_threshold`
+the weak floor. Chunks in between come back in `weak_hits` with `no_answer`
+still False — below the bar, but still evidence a generation might use. The UI
+for the wording this service runs on chooses to hand those to the model, which
+is allowed to decline.
+
 No per-document score is stored. Scores belong to a query, not to a document, so
 persisting one would create state that goes stale against the corpus and is
 wrong for the next question. They are returned here and forgotten.
@@ -69,10 +75,12 @@ class SearchResponse(BaseModel):
 
     query: str
     hits: list[dict]
+    weak_hits: list[dict] = []
     no_answer: bool
     reason: str | None
     top_score: float | None
     threshold: float
+    weak_threshold: float = 0.0
     limit: int
     candidates_returned: int
     below_threshold: int

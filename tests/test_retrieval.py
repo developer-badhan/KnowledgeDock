@@ -97,6 +97,7 @@ def use_case(
     query: str,
     top_k: int = 5,
     min_score: float = 0.65,
+    weak_min_score: float = 0.5,
     budget: int = 6000,
     embeddings: StubEmbeddings | None = None,
 ) -> SemanticSearch:
@@ -108,6 +109,7 @@ def use_case(
         max_embed_tokens=2048,
         top_k=top_k,
         min_score=min_score,
+        weak_min_score=weak_min_score,
         context_max_characters=budget,
     )
 
@@ -254,8 +256,12 @@ class TestSemanticSearch:
 
         assert [c.text for c in outcome.chunks] == ["hit"]
         assert outcome.no_answer is False
+        assert outcome.reason is None
         assert outcome.top_score == pytest.approx(cosine_similarity(E_X, NEAR_X))
-        assert outcome.below_threshold == 2
+        # The near miss lands between the confident bar and the weak floor, so
+        # it is reported as weak evidence rather than silently discarded.
+        assert [c.text for c in outcome.weak_chunks] == ["edge"]
+        assert outcome.below_threshold == 1
 
     async def test_query_is_embedded_with_the_query_task_type(self, ws_id):
         # Documents embed as RETRIEVAL_DOCUMENT and queries as RETRIEVAL_QUERY.
@@ -268,7 +274,7 @@ class TestSemanticSearch:
         assert outcome.embedding_model == "stub-embeddings"
         assert outcome.embedding_provider == "stub"
 
-    async def test_no_answer_when_every_hit_falls_below_the_threshold(self, ws_id):
+    async def test_a_near_miss_becomes_weak_evidence_not_a_no_answer(self, ws_id):
         from uuid import uuid4
 
         repo = InMemoryChunkRepository()
@@ -278,12 +284,46 @@ class TestSemanticSearch:
         ]
         outcome = await use_case(repo, query="q").execute(ws_id, "q")
 
-        assert outcome.no_answer is True
-        assert outcome.reason is NoAnswerReason.BELOW_THRESHOLD
+        # The production SKILL.md case: a 0.6 not a 0.65. It stays a no-answer
+        # for the read-only search page, but is reported -- and a generation
+        # caller may still hand it to the model, which is allowed to decline.
+        assert outcome.no_answer is False
+        assert outcome.reason is NoAnswerReason.WEAK_EVIDENCE
         assert outcome.chunks == ()
         assert outcome.context.is_empty
+        assert [c.text for c in outcome.weak_chunks] == ["miss"]
         # The score is still reported: that is how the threshold gets tuned.
         assert outcome.top_score == pytest.approx(cosine_similarity(E_X, NEAR_MISS))
+
+    async def test_below_the_weak_floor_is_a_hard_no_answer(self, ws_id):
+        from uuid import uuid4
+
+        repo = InMemoryChunkRepository()
+        doc = uuid4()
+        repo.chunks[doc] = [
+            chunk(workspace_id=ws_id, document_id=doc, text="junk", embedding=UNRELATED)
+        ]
+        outcome = await use_case(repo, query="q").execute(ws_id, "q")
+
+        assert outcome.no_answer is True
+        assert outcome.reason is NoAnswerReason.BELOW_THRESHOLD
+        assert outcome.weak_chunks == ()
+        assert outcome.context.is_empty
+
+    async def test_the_weak_band_is_empty_when_the_floor_equals_the_bar(self, ws_id):
+        from uuid import uuid4
+
+        # weak_min_score == min_score is the opt-out: single-cutoff behaviour
+        # preserved for callers that do not configure a weak band.
+        repo = InMemoryChunkRepository()
+        doc = uuid4()
+        repo.chunks[doc] = [
+            chunk(workspace_id=ws_id, document_id=doc, text="miss", embedding=NEAR_MISS)
+        ]
+        outcome = await use_case(repo, query="q", weak_min_score=0.65).execute(ws_id, "q")
+        assert outcome.no_answer is True
+        assert outcome.reason is NoAnswerReason.BELOW_THRESHOLD
+        assert outcome.weak_chunks == ()
 
     async def test_empty_index_is_distinguished_from_a_high_threshold(self, ws_id):
         outcome = await use_case(InMemoryChunkRepository(), query="q").execute(ws_id, "q")
@@ -376,10 +416,12 @@ class TestSemanticSearch:
         outcome = SearchOutcome(
             query="q",
             chunks=(retrieved("hit", 0.9),),
+            weak_chunks=(retrieved("edge", 0.6, index=1),),
             no_answer=True,
             reason=NoAnswerReason.BELOW_THRESHOLD,
             top_score=0.9,
             threshold=0.65,
+            weak_min_score=0.5,
             limit=5,
             candidates_returned=3,
             below_threshold=2,
@@ -390,6 +432,8 @@ class TestSemanticSearch:
         payload = outcome.to_dict()
         assert payload["reason"] == "below_threshold"
         assert payload["hits"][0]["score"] == 0.9
+        assert payload["weak_hits"][0]["score"] == 0.6
+        assert payload["weak_threshold"] == 0.5
         assert payload["embedding"] == {
             "provider": "stub",
             "model": "stub-embeddings",

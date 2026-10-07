@@ -365,6 +365,7 @@ def create_app(
             max_embed_tokens=settings.gemini_embedding_max_input_tokens,
             top_k=settings.retrieval_top_k,
             min_score=settings.retrieval_min_score,
+            weak_min_score=settings.retrieval_weak_min_score,
             context_max_characters=settings.context_max_chars,
         )
 

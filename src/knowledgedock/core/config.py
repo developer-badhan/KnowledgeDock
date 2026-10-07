@@ -102,6 +102,7 @@ class Settings:
     vector_similarity: str
     retrieval_top_k: int
     retrieval_min_score: float
+    retrieval_weak_min_score: float
     context_max_chars: int
 
     # -- Rate limiting -----------------------------------------------------
@@ -163,6 +164,13 @@ class Settings:
         # would silently accept a threshold that rejects everything.
         if not -1.0 <= self.retrieval_min_score <= 1.0:
             raise ValueError("RETRIEVAL_MIN_SCORE must be between -1.0 and 1.0")
+        # The weak floor participates in the same cosine scale; and it only
+        # makes sense below the confident bar, or the band is empty and the
+        # weak path would silently do nothing.
+        if not -1.0 <= self.retrieval_weak_min_score <= 1.0:
+            raise ValueError("RETRIEVAL_WEAK_MIN_SCORE must be between -1.0 and 1.0")
+        if self.retrieval_weak_min_score > self.retrieval_min_score:
+            raise ValueError("RETRIEVAL_WEAK_MIN_SCORE must not exceed RETRIEVAL_MIN_SCORE")
         if self.gemini_chat_max_output_tokens < 1:
             raise ValueError("GEMINI_CHAT_MAX_OUTPUT_TOKENS must be at least 1")
         if not 0.0 <= self.gemini_chat_temperature <= 2.0:
@@ -306,6 +314,7 @@ def load_settings(source: Any | None = None) -> Settings:
         vector_similarity=optional("VECTOR_SIMILARITY", "cosine"),
         retrieval_top_k=optional("RETRIEVAL_TOP_K", 5, int),
         retrieval_min_score=optional("RETRIEVAL_MIN_SCORE", 0.65, float),
+        retrieval_weak_min_score=optional("RETRIEVAL_WEAK_MIN_SCORE", 0.5, float),
         context_max_chars=optional("CONTEXT_MAX_CHARS", 6000, int),
         rate_limit_per_minute=optional("RATE_LIMIT_PER_MINUTE", 60, int),
         rate_limit_query_per_minute=optional("RATE_LIMIT_QUERY_PER_MINUTE", 10, int),

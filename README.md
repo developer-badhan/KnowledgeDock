@@ -1051,12 +1051,17 @@ to `pending` rather than creating a duplicate.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/workspaces/{id}/search` | Raw semantic search. No LLM. Reports `threshold`, `top_score`, `below_threshold` and the assembled context. |
+| `POST` | `/workspaces/{id}/search` | Raw semantic search. No LLM. Reports `threshold`, the weak-evidence `weak_threshold`/`weak_hits`, `top_score`, `below_threshold` and the assembled context. |
 | `POST` | `/workspaces/{id}/query` | Retrieve, build context, generate a grounded answer, cite sources. |
 | `GET` | `/workspaces/{id}/usage` | AI spend for this workspace over a rolling window, including failures. |
 
 `/search` is the tuning surface: `/query` tells you *what* was said, and `/search`
-tells you *why retrieval chose it*.
+tells you *why retrieval chose it*. Retrieval is chunk-level across every Ready
+document in the workspace at once — there is no per-document selection step — and
+answers always list the documents (by filename, chunk and score) they were built
+from. Matches near but below the confident threshold become weak evidence the
+model may answer from or reject; a rejected match is reported as a no-answer and
+a used one is flagged in the UI.
 
 ## Conversations
 

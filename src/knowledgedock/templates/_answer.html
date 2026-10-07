@@ -25,11 +25,19 @@
   {% endif %}
 
   {% if answer.retrieval.top_score is not none %}
-    <p class="kd-retrieval-note">
-      Top match {{ '%.2f' | format(answer.retrieval.top_score) }}
-      against a threshold of {{ '%.2f' | format(answer.retrieval.threshold) }}
-      {% if answer.no_answer %} — nothing cleared it.{% endif %}
-    </p>
+    {% if answer.retrieval.weak %}
+      <p class="kd-retrieval-note kd-retrieval-weak">
+        Evidence was weak — best match {{ '%.2f' | format(answer.retrieval.top_score) }}
+        below the {{ '%.2f' | format(answer.retrieval.threshold) }} threshold.
+        Read the source below and judge it yourself.
+      </p>
+    {% else %}
+      <p class="kd-retrieval-note">
+        Top match {{ '%.2f' | format(answer.retrieval.top_score) }}
+        against a threshold of {{ '%.2f' | format(answer.retrieval.threshold) }}
+        {% if answer.no_answer %} — nothing cleared it.{% endif %}
+      </p>
+    {% endif %}
   {% endif %}
 
   {% if answer.conversation_id %}
