@@ -10,14 +10,22 @@
   <em>An API-first AI knowledge retrieval platform — upload documents, search semantically, and ask questions answered with retrieved context.</em>
 </p>
 
+<p align="center">
+  🔴 <strong>Live demo:</strong> <a href="https://knowledgedock.onrender.com">knowledgedock.onrender.com</a>
+</p>
+
+<p align="center">
+  <img src="src/knowledgedock/icon/knowledgedock.onrender.com_.png" alt="KnowledgeDock live demo — the document dashboard and the Ask interface" width="880" />
+</p>
+
+Python + FastAPI · MongoDB Atlas Vector Search · Gemini embeddings & generation · HTMX + Bootstrap dashboard · RAG answers with cited sources.
+
 ---
 
 ## Live demo
 
 The application is deployed on the Render free tier and backed by a MongoDB
 Atlas free (M0) cluster and Google's Gemini free tier.
-
-**Try it:** **[https://knowledgedock.onrender.com](https://knowledgedock.onrender.com)**
 
 What you can observe on a free deployment:
 
